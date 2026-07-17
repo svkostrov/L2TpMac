@@ -971,9 +971,9 @@ struct ContentView: View {
                         HStack(spacing: 8) {
                             Group {
                                 if showVPNPassword {
-                                    TextField("Хранится в настройках приложения", text: $vpn.password)
+                                    TextField("Пароль VPN", text: $vpn.password)
                                 } else {
-                                    SecureField("Хранится в настройках приложения", text: $vpn.password)
+                                    SecureField("Пароль VPN", text: $vpn.password)
                                 }
                             }
                             .textFieldStyle(.roundedBorder)
