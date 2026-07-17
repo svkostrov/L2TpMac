@@ -4,6 +4,12 @@ import Combine
 import Security
 import ServiceManagement
 
+private let appVersion: String = {
+    let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+    return "v\(short) (\(build))"
+}()
+
 // MARK: - Keychain
 
 enum Keychain {
@@ -490,6 +496,9 @@ struct ContentView: View {
                         .font(.title3).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Text(appVersion)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.secondary)
                 if vpn.busy { ProgressView().controlSize(.small) }
             }
 
@@ -663,6 +672,7 @@ struct MenuContent: View {
             }
             Divider()
             HStack {
+                Text(appVersion)
                 Button("Открыть окно") {
                     // BR-17: openWindow из MenuBarExtra не всегда открывает закрытое окно —
                     // сначала ищем существующее окно и показываем его, иначе создаём новое
