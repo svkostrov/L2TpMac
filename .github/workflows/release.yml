@@ -1,0 +1,36 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pack app
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ditto -c -k --keepParent "L2TP Office.app" "L2TP-Office-${VERSION}.zip"
+          echo "ZIP=L2TP-Office-${VERSION}.zip" >> "$GITHUB_ENV"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > notes.md <<'NOTES'
+          Готовое к распространению приложение: скачай zip, распакуй, перенеси `L2TP Office.app` в `/Applications`.
+          Подпись ad-hoc: при первом запуске ПКМ → «Открыть» → «Открыть» (или `xattr -cr "/Applications/L2TP Office.app"`). Только Apple Silicon, macOS 13+.
+
+          Изменения — см. «История версий» в README.md и bugreports.md.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" "$ZIP" \
+            --title "L2TP Office $VERSION" \
+            --notes-file notes.md
