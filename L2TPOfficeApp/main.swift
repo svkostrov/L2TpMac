@@ -582,8 +582,11 @@ final class VPNManager: ObservableObject {
     }
 
     private static func rootHelperInstalled() -> Bool {
-        FileManager.default.isExecutableFile(atPath: rootHelperPath) &&
-        (try? String(contentsOfFile: sudoersPath, encoding: .utf8).contains(rootHelperPath)) == true
+        guard FileManager.default.fileExists(atPath: rootHelperPath) else { return false }
+        let probePath = NSTemporaryDirectory() + "l2tp-helper-probe-\(UUID().uuidString).env"
+        let out = runRootHelper(requestPath: probePath)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return out.contains("REQUEST-NOT-FOUND")
     }
 
     private static func installRootHelper() -> String {
