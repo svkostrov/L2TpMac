@@ -286,6 +286,9 @@ final class VPNManager: ObservableObject {
     private var timer: Timer?
     private var pingTimer: Timer?
     private var pingInProgress = false
+    private var remotePingFailures = 0
+    private var lastSystemPathSignature = ""
+    private var rebuildInProgress = false
     private var reconnectTimer: Timer?
     private var shouldMaintainConnection = false
     private var wasConnected = false
@@ -311,6 +314,7 @@ final class VPNManager: ObservableObject {
         }
         pingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.updateRemotePing()
+            self?.rebuildTunnelAfterSystemPathChangeIfNeeded()
         }
         if autoConnect {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
@@ -410,7 +414,17 @@ final class VPNManager: ObservableObject {
                 let up = !ip.isEmpty
                 self.isConnected = up && oursAlive
                 self.foreignTunnel = up && !oursAlive
-                if !self.isConnected { self.remotePingText = "" }
+                if self.reconnectEnabled, self.isConnected {
+                    self.shouldMaintainConnection = true
+                }
+                if !self.isConnected {
+                    self.remotePingText = ""
+                    self.remotePingFailures = 0
+                    self.lastSystemPathSignature = ""
+                    self.rebuildInProgress = false
+                } else if self.lastSystemPathSignature.isEmpty {
+                    self.lastSystemPathSignature = Self.currentSystemPathSignature()
+                }
                 if !self.busy {
                     if self.reconnecting { self.statusText = "Ожидаю переподключение…" }
                     else if self.isConnected { self.statusText = "Подключено" }
@@ -437,7 +451,65 @@ final class VPNManager: ObservableObject {
                     return
                 }
                 self.remotePingText = value.map { "\($0) ms" } ?? "—"
+                if value == nil {
+                    self.remotePingFailures += 1
+                    self.rebuildTunnelAfterPingLossIfNeeded()
+                } else {
+                    self.remotePingFailures = 0
+                }
             }
+        }
+    }
+
+    private func rebuildTunnelAfterPingLossIfNeeded() {
+        guard remotePingFailures >= 2,
+              reconnectEnabled,
+              shouldMaintainConnection,
+              isConnected,
+              !busy,
+              !rebuildInProgress,
+              !foreignTunnel,
+              settingsValid else { return }
+        remotePingFailures = 0
+        rebuildTunnel(reason: "Ping до PPP-сервера пропал — перестраиваю туннель…")
+    }
+
+    private func rebuildTunnelAfterSystemPathChangeIfNeeded() {
+        guard reconnectEnabled,
+              shouldMaintainConnection,
+              isConnected,
+              !busy,
+              !rebuildInProgress,
+              !foreignTunnel,
+              settingsValid else { return }
+        let current = Self.currentSystemPathSignature()
+        guard !current.isEmpty else { return }
+        if lastSystemPathSignature.isEmpty {
+            lastSystemPathSignature = current
+            return
+        }
+        guard current != lastSystemPathSignature else { return }
+        lastSystemPathSignature = current
+        rebuildTunnel(reason: "Системный путь к интернету изменился — перестраиваю туннель…")
+    }
+
+    private func rebuildTunnel(reason: String) {
+        guard !rebuildInProgress else { return }
+        rebuildInProgress = true
+        reconnecting = true
+        statusText = "Перестраиваю туннель…"
+        lastError = reason
+        runPrivileged(request: requestFile(action: "disconnect"), action: "Перестраиваю туннель…") { result in
+            self.rebuildInProgress = false
+            guard self.reconnectEnabled,
+                  self.shouldMaintainConnection,
+                  self.settingsValid,
+                  !Self.isCancelled(result) else {
+                self.reconnecting = false
+                return
+            }
+            self.lastSystemPathSignature = Self.currentSystemPathSignature()
+            self.connect()
         }
     }
 
@@ -451,6 +523,26 @@ final class VPNManager: ObservableObject {
             return String(format: "%.0f", number)
         }
         return value
+    }
+
+    private static func currentSystemPathSignature() -> String {
+        ["default", "1.1.1.1", "129.0.0.1"]
+            .map { routeSignature(for: $0) }
+            .joined(separator: "|")
+    }
+
+    private static func routeSignature(for target: String) -> String {
+        let out = run("/sbin/route", ["-n", "get", target])
+        var gateway = ""
+        var interface = ""
+        var ifscope = ""
+        for raw in out.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("gateway:") { gateway = String(line.dropFirst("gateway:".count)).trimmingCharacters(in: .whitespaces) }
+            else if line.hasPrefix("interface:") { interface = String(line.dropFirst("interface:".count)).trimmingCharacters(in: .whitespaces) }
+            else if line.hasPrefix("ifscope:") { ifscope = String(line.dropFirst("ifscope:".count)).trimmingCharacters(in: .whitespaces) }
+        }
+        return "\(target):gw=\(gateway),if=\(interface),scope=\(ifscope)"
     }
 
     private func handleReconnectAfterRefresh(up: Bool) {
@@ -470,6 +562,9 @@ final class VPNManager: ObservableObject {
         reconnecting = false
         reconnectTimer?.invalidate()
         reconnectTimer = nil
+        remotePingFailures = 0
+        lastSystemPathSignature = ""
+        rebuildInProgress = false
         runPrivileged(request: requestFile(action: "connect"), action: "Подключаюсь…") { result in
             if Self.isCancelled(result) {
                 self.shouldMaintainConnection = false
@@ -502,6 +597,9 @@ final class VPNManager: ObservableObject {
         guard !busy, !foreignTunnel else { return }
         shouldMaintainConnection = false
         cancelReconnectTimer()
+        remotePingFailures = 0
+        lastSystemPathSignature = ""
+        rebuildInProgress = false
         runPrivileged(request: requestFile(action: "disconnect"), action: "Отключаю…") { result in
             // BR-04: отмена диалога — явное сообщение, туннель остался
             self.lastError = Self.isCancelled(result) ? "Отключение отменено (диалог пароля закрыт)." : ""
@@ -511,6 +609,9 @@ final class VPNManager: ObservableObject {
     func emergencyStop() {
         shouldMaintainConnection = false
         cancelReconnectTimer()
+        remotePingFailures = 0
+        lastSystemPathSignature = ""
+        rebuildInProgress = false
         runPrivileged(request: requestFile(action: "disconnect"), action: "Аварийно останавливаю подключение…") { result in
             if Self.isCancelled(result) {
                 self.lastError = "Аварийная остановка отменена."
@@ -548,6 +649,8 @@ final class VPNManager: ObservableObject {
         reconnectTimer?.invalidate()
         reconnectTimer = nil
         reconnecting = false
+        remotePingFailures = 0
+        rebuildInProgress = false
     }
 
     func clearLog() {
