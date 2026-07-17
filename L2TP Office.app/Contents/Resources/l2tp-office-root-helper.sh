@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.41"
+ROOT_HELPER_VERSION="1.42"
 
 die() {
   echo "$1"
@@ -292,9 +292,9 @@ PPPEOF
         fi
       done
       if [ -n "$rterr" ]; then
-        append_log "L2TP Office: туннель поднят, но часть маршрутов не добавилась. Локальный IP: $ip, сервер PPP: ${peer:-не определён}, сети: ${networks:-не заданы}."
+        append_log "L2TP Office: tunnel is up, but some routes were not installed. Local IP: $ip, PPP server: ${peer:-unknown}, VPN networks: ${networks:-none}."
       else
-        append_log "L2TP Office: туннель успешно поднят. Локальный IP: $ip, сервер PPP: ${peer:-не определён}, сети через VPN: ${networks:-не заданы}."
+        append_log "L2TP Office: tunnel is up. Local IP: $ip, PPP server: ${peer:-unknown}, VPN networks: ${networks:-none}."
       fi
       if [ -n "$rterr" ]; then echo "CONNECTED-ROUTEWARN $ip"; else echo "CONNECTED $ip"; fi
       exit 0
