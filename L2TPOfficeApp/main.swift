@@ -14,7 +14,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.28"
+private let requiredRootHelperVersion = "1.31"
 
 // MARK: - GitHub updater
 
@@ -339,6 +339,7 @@ final class VPNManager: ObservableObject {
         if d.object(forKey: "routeAll") as? Bool == true {
             d.set(false, forKey: "routeAll")
         }
+        clearLogOnLaunch()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.refresh()
@@ -490,6 +491,19 @@ final class VPNManager: ObservableObject {
         }
     }
 
+    func clearLog() {
+        runPrivileged(request: requestFile(action: "clearlog"), action: "Очищаю лог…") { result in
+            if Self.isCancelled(result) {
+                self.lastError = "Очистка лога отменена."
+            } else if result.contains("DONE") || result.isEmpty {
+                self.lastError = ""
+                self.logText = Self.tail(Self.logPath, lines: 60)
+            } else {
+                self.lastError = result
+            }
+        }
+    }
+
     func disconnectBeforeTerminate(completion: @escaping () -> Void) {
         guard isConnected, !foreignTunnel else {
             completion()
@@ -587,6 +601,25 @@ final class VPNManager: ObservableObject {
         ROUTE_ALL=\(b64(routeAll ? "true" : "false"))
         NETWORKS=\(b64(nets))
         """
+    }
+
+    private func clearLogOnLaunch() {
+        Self.clearLogFileLocally()
+        guard Self.rootHelperInstalled() else { return }
+        let requestPath = NSTemporaryDirectory() + "l2tp-clear-log-\(UUID().uuidString).env"
+        do {
+            try requestFile(action: "clearlog").write(toFile: requestPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: requestPath)
+            _ = Self.runRootHelper(requestPath: requestPath)
+        } catch {
+            return
+        }
+        try? FileManager.default.removeItem(atPath: requestPath)
+    }
+
+    private static func clearLogFileLocally() {
+        try? "".write(toFile: logPath, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: logPath)
     }
 
     private static func runRootHelper(requestPath: String) -> String {
@@ -1080,22 +1113,33 @@ struct ContentView: View {
 
             // Log
             GroupBox("Лог PPP/L2TP") {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        Text(vpn.logText)
-                            .font(.system(size: 11, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .id("logEnd")
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Spacer()
+                        Button {
+                            vpn.clearLog()
+                        } label: {
+                            Label("Очистить лог", systemImage: "trash")
+                        }
+                        .disabled(vpn.busy)
                     }
-                    .onAppear {   // OPT-3: скролл вниз при первом открытии
-                        proxy.scrollTo("logEnd", anchor: .bottom)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            Text(vpn.logText)
+                                .font(.system(size: 11, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .id("logEnd")
+                        }
+                        .onAppear {   // OPT-3: скролл вниз при первом открытии
+                            proxy.scrollTo("logEnd", anchor: .bottom)
+                        }
+                        .onChange(of: vpn.logText) { _ in
+                            proxy.scrollTo("logEnd", anchor: .bottom)
+                        }
                     }
-                    .onChange(of: vpn.logText) { _ in
-                        proxy.scrollTo("logEnd", anchor: .bottom)
-                    }
+                    .frame(minHeight: 150)
                 }
-                .frame(minHeight: 150)
             }
         }
         .padding(16)

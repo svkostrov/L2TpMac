@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.28"
+ROOT_HELPER_VERSION="1.31"
 
 die() {
   echo "$1"
@@ -109,6 +109,11 @@ disconnect_tunnel() {
   stop_tunnel_processes
   sleep 1
   restore_network
+}
+
+clear_log() {
+  : > "$LOG"
+  chmod 644 "$LOG" 2>/dev/null || true
 }
 
 ensure_server_route() {
@@ -226,5 +231,6 @@ case "$action" in
   version) echo "ROOT-HELPER-VERSION $ROOT_HELPER_VERSION" ;;
   connect) connect_tunnel ;;
   disconnect) disconnect_tunnel; echo "DONE" ;;
+  clearlog) clear_log; echo "DONE" ;;
   *) die "BAD-ACTION" ;;
 esac
