@@ -2,20 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleIconFile</key>
-	<string>AppIcon</string>
+	<key>CFBundleDisplayName</key>
+	<string>L2TP Office</string>
 	<key>CFBundleExecutable</key>
 	<string>L2TPOffice</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.rokot.l2tp-office</string>
 	<key>CFBundleName</key>
 	<string>L2TP Office</string>
-	<key>CFBundleDisplayName</key>
-	<string>L2TP Office</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.9</string>
+	<string>1.12</string>
 	<key>CFBundleVersion</key>
 	<string>7</string>
 	<key>LSMinimumSystemVersion</key>
