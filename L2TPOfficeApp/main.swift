@@ -328,6 +328,15 @@ final class VPNManager: ObservableObject {
             *pppd) kill "$OLDPID" 2>/dev/null; sleep 1 ;;
           esac
         fi
+        # BR-18: перед новым подключением чистим стейл-стор от прошлых сессий,
+        # иначе configd может держать мёртвый PPP-сервис как Primary
+        if ! /sbin/ifconfig ppp0 >/dev/null 2>&1; then
+          for K in $(echo 'list State:/Network/Service/[^/]+/IPv4' | /usr/sbin/scutil | /usr/bin/awk '{print $NF}'); do
+            if echo "show $K" | /usr/sbin/scutil | /usr/bin/grep -q 'InterfaceName : ppp0'; then
+              printf 'remove %s\\nquit\\n' "$K" | /usr/sbin/scutil
+            fi
+          done
+        fi
         umask 077
         cat > "$OPTS" <<'PPPEOF'
         \(opts)
@@ -381,14 +390,42 @@ final class VPNManager: ObservableObject {
         done
         for P in $PIDS; do kill -KILL "$P" 2>/dev/null; done
         sleep 1
-        # восстановить default route, если он пропал вместе с ppp0
-        if ! /sbin/route -n get default >/dev/null 2>&1; then
+        # BR-18: pppd может умереть, не откатив сетевой стор (committed PPP store).
+        # Тогда PrimaryService остаётся мёртвым PPP-сервисом: default route деградирует
+        # до interface-scoped, глобальный DNS пустеет — интернет пропадает.
+        # Чистим стейл-ключи State:/Network/Service/*/IPv4 с InterfaceName ppp0.
+        if ! /sbin/ifconfig ppp0 >/dev/null 2>&1; then
+          for K in $(echo 'list State:/Network/Service/[^/]+/IPv4' | /usr/sbin/scutil | /usr/bin/awk '{print $NF}'); do
+            if echo "show $K" | /usr/sbin/scutil | /usr/bin/grep -q 'InterfaceName : ppp0'; then
+              printf 'remove %s\\nquit\\n' "$K" | /usr/sbin/scutil
+            fi
+          done
+          sleep 1
+        fi
+        # BR-18: восстановить глобальный default route — с повторами, т.к. конфигурация
+        # может переигрываться configd в течение нескольких секунд после teardown
+        for T in 1 2 3 4 5; do
+          /sbin/route -n get default >/dev/null 2>&1 && break
           for IF in $(/sbin/ifconfig -lu); do
             case "$IF" in en*) ;; *) continue ;; esac
             /sbin/ifconfig "$IF" 2>/dev/null | grep -q 'inet ' || continue
             GW=$(/usr/sbin/ipconfig getoption "$IF" router 2>/dev/null)
             if [ -n "$GW" ]; then
-              /sbin/route -n add default "$GW" >/dev/null 2>&1 && break
+              /sbin/route -n delete default >/dev/null 2>&1
+              /sbin/route -n add default "$GW" >/dev/null 2>&1
+              break
+            fi
+          done
+          sleep 1
+        done
+        # BR-18: если глобальный DNS так и остался пустым — обновить DHCP-аренду
+        # (только на интерфейсе, который реально работает по DHCP)
+        if ! echo 'show State:/Network/Global/DNS' | /usr/sbin/scutil | /usr/bin/grep -q ServerAddresses; then
+          for IF in $(/sbin/ifconfig -lu); do
+            case "$IF" in en*) ;; *) continue ;; esac
+            if /usr/sbin/ipconfig getpacket "$IF" 2>/dev/null | /usr/bin/grep -q yiaddr; then
+              /usr/sbin/ipconfig set "$IF" DHCP
+              break
             fi
           done
         fi
