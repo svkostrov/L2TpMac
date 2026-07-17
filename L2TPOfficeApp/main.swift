@@ -525,6 +525,12 @@ final class VPNManager: ObservableObject {
         password "\(pppEscape(password))"
         noauth
         noccp
+        novj
+        novjccomp
+        nopcomp
+        noaccomp
+        receive-all
+        default-asyncmap
         mtu \(Self.pppMTU)
         mru \(Self.pppMTU)
         lcp-echo-interval 30
