@@ -476,6 +476,18 @@ final class VPNManager: ObservableObject {
         }
     }
 
+    func emergencyStop() {
+        runPrivileged(request: requestFile(action: "disconnect"), action: "Аварийно останавливаю подключение…") { result in
+            if Self.isCancelled(result) {
+                self.lastError = "Аварийная остановка отменена."
+            } else if result.contains("DONE") || result.isEmpty {
+                self.lastError = ""
+            } else {
+                self.lastError = result
+            }
+        }
+    }
+
     func disconnectBeforeTerminate(completion: @escaping () -> Void) {
         guard isConnected, !foreignTunnel else {
             completion()
@@ -1046,6 +1058,16 @@ struct ContentView: View {
                 .opacity(disconnectDisabled ? 0.45 : 1.0)
             }
 
+            Button {
+                vpn.emergencyStop()
+            } label: {
+                Label("Остановить подключение", systemImage: "xmark.octagon.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .tint(.red)
+            .help("Аварийно останавливает процессы L2TP Office и восстанавливает маршруты")
+
             // Log
             GroupBox("Лог PPP/L2TP") {
                 ScrollViewReader { proxy in
@@ -1115,6 +1137,14 @@ struct MenuContent: View {
                 .disabled(disconnectDisabled)
                 .opacity(disconnectDisabled ? 0.5 : 1.0)
             }
+            Button {
+                vpn.emergencyStop()
+            } label: {
+                Label("Остановить подключение", systemImage: "xmark.octagon.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .tint(.red)
+            .help("Аварийная остановка зависшего подключения")
             Divider()
             HStack {
                 Button("Открыть окно") {
