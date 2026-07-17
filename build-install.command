@@ -10,13 +10,18 @@ SRC="L2TPOfficeApp"
 echo "==> Компиляция main.swift"
 swiftc -O -parse-as-library "$SRC/main.swift" -o /tmp/L2TPOffice
 
+echo "==> Компиляция user-space L2TP helper"
+GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /tmp/l2tp-office-helper ./L2TPOfficeHelper
+
 echo "==> Сборка бандла"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$SRC/Info.plist" "$APP/Contents/"
 cp "$SRC/AppIcon.icns" "$APP/Contents/Resources/"
 mv /tmp/L2TPOffice "$APP/Contents/MacOS/L2TPOffice"
+mv /tmp/l2tp-office-helper "$APP/Contents/MacOS/l2tp-office-helper"
 chmod +x "$APP/Contents/MacOS/L2TPOffice"
+chmod +x "$APP/Contents/MacOS/l2tp-office-helper"
 
 echo "==> Подпись (ad-hoc) — после копирования всех ресурсов, иначе иконка ломает подпись"
 codesign --force --deep -s - "$APP"

@@ -310,6 +310,10 @@ final class VPNManager: ObservableObject {
     static let logPath = "/tmp/l2tp-office-app.log"
     static let pidPath = "/var/run/l2tp-office-app.pid"
     static let optsPath = "/etc/ppp/l2tp-office-app.opts"   // маркер наших pppd в argv
+    static let helperPath = Bundle.main.executableURL?
+        .deletingLastPathComponent()
+        .appendingPathComponent("l2tp-office-helper")
+        .path ?? "/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
     static let pppMTU = 1200
     private var loaded = false
     private var timer: Timer?
@@ -515,25 +519,31 @@ final class VPNManager: ObservableObject {
          .replacingOccurrences(of: "\n", with: "")
     }
 
+    private func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     private func connectScript() -> String {
+        let cleanServer = server.trimmingCharacters(in: .whitespaces)
+        let helperCommand = "\(shellQuote(Self.helperPath)) -server \(shellQuote(cleanServer)) -log \(shellQuote(Self.logPath))"
         var opts = """
-        plugin L2TP.ppp
-        l2tpnoipsec
         nodetach
-        remoteaddress \(server.trimmingCharacters(in: .whitespaces))
+        pty "\(pppEscape(helperCommand))"
         user "\(pppEscape(username))"
         password "\(pppEscape(password))"
         noauth
+        noipdefault
+        ipcp-accept-local
+        ipcp-accept-remote
         nodefaultroute
         noccp
         noacsp
-        looplocal
         novj
         novjccomp
         nopcomp
         noaccomp
         receive-all
-        default-asyncmap
+        asyncmap 0
         mtu \(Self.pppMTU)
         mru \(Self.pppMTU)
         lcp-echo-interval 30
@@ -563,9 +573,14 @@ final class VPNManager: ObservableObject {
         # Сгенерировано L2TP Office.app
         OPTS=\(Self.optsPath)
         PIDF=\(Self.pidPath)
-        SERVER_HOST='\(server.trimmingCharacters(in: .whitespaces))'
+        HELPER=\(shellQuote(Self.helperPath))
+        SERVER_HOST=\(shellQuote(cleanServer))
         # BR-11: opts-файл с паролем удаляется при любом завершении скрипта
         trap 'rm -f "$OPTS"' EXIT
+        if [ ! -x "$HELPER" ]; then
+          echo "HELPER-MISSING: $HELPER"
+          exit 0
+        fi
         # BR-06: перед kill проверяем, что PID из pidfile действительно pppd
         OLDPID=$(cat "$PIDF" 2>/dev/null)
         if [ -n "$OLDPID" ]; then
@@ -856,7 +871,7 @@ struct ContentView: View {
             }
 
             // Log
-            GroupBox("Лог pppd") {
+            GroupBox("Лог PPP/L2TP") {
                 ScrollViewReader { proxy in
                     ScrollView {
                         Text(vpn.logText)

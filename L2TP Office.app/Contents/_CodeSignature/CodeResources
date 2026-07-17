@@ -11,6 +11,15 @@
 	</dict>
 	<key>files2</key>
 	<dict>
+		<key>MacOS/l2tp-office-helper</key>
+		<dict>
+			<key>cdhash</key>
+			<data>
+			WopQzLnJu7z+SgppWU3Y8/0iadg=
+			</data>
+			<key>requirement</key>
+			<string>cdhash H"5a8a50ccb9c9bbbcfe4a0a69594dd8f3fd2269d8"</string>
+		</dict>
 		<key>Resources/AppIcon.icns</key>
 		<dict>
 			<key>hash2</key>
