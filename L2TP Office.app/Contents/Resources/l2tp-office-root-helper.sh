@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.49"
+ROOT_HELPER_VERSION="1.50"
 
 die() {
   echo "$1"
@@ -308,6 +308,10 @@ PPPEOF
   kill "$pid" 2>/dev/null || true
   echo "TIMEOUT"
 }
+
+if [ "${L2TP_ROOT_HELPER_LIB_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 REQ="${1:-}"
 [ -n "$REQ" ] || die "NO-REQUEST"

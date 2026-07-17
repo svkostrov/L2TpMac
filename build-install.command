@@ -7,11 +7,15 @@ cd "$(dirname "$0")"
 APP="L2TP Office.app"
 SRC="L2TPOfficeApp"
 
-echo "==> Компиляция main.swift"
-swiftc -O -parse-as-library "$SRC/main.swift" -o /tmp/L2TPOffice
+echo "==> Компиляция main.swift (universal arm64 + x86_64)"
+swiftc -O -target arm64-apple-macos13 -parse-as-library "$SRC/main.swift" -o /tmp/L2TPOffice-arm64
+swiftc -O -target x86_64-apple-macos13 -parse-as-library "$SRC/main.swift" -o /tmp/L2TPOffice-x86_64
+lipo -create -output /tmp/L2TPOffice /tmp/L2TPOffice-arm64 /tmp/L2TPOffice-x86_64
 
-echo "==> Компиляция user-space L2TP helper"
-GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /tmp/l2tp-office-helper ./L2TPOfficeHelper
+echo "==> Компиляция user-space L2TP helper (universal arm64 + x86_64)"
+GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /tmp/l2tp-office-helper-arm64 ./L2TPOfficeHelper
+GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o /tmp/l2tp-office-helper-x86_64 ./L2TPOfficeHelper
+lipo -create -output /tmp/l2tp-office-helper /tmp/l2tp-office-helper-arm64 /tmp/l2tp-office-helper-x86_64
 
 echo "==> Сборка бандла"
 rm -rf "$APP"

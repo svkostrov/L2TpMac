@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.49"
+private let requiredRootHelperVersion = "1.50"
 
 // MARK: - GitHub updater
 
@@ -888,6 +888,21 @@ func statusColor(_ vpn: VPNManager) -> Color {
     return .red
 }
 
+extension View {
+    @ViewBuilder
+    func onChangeCompat<V: Equatable>(of value: V, perform action: @escaping () -> Void) -> some View {
+        if #available(macOS 14.0, *) {
+            self.onChange(of: value) {
+                action()
+            }
+        } else {
+            self.onChange(of: value) { _ in
+                action()
+            }
+        }
+    }
+}
+
 // MARK: - Termination
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -1101,7 +1116,7 @@ struct ContentView: View {
                         .onAppear {   // OPT-3: скролл вниз при первом открытии
                             proxy.scrollTo("logEnd", anchor: .bottom)
                         }
-                        .onChange(of: vpn.logText) { _ in
+                        .onChangeCompat(of: vpn.logText) {
                             proxy.scrollTo("logEnd", anchor: .bottom)
                         }
                     }
