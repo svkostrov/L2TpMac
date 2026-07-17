@@ -1,7 +1,6 @@
 import SwiftUI
 import AppKit
 import Combine
-import Security
 import ServiceManagement
 import Foundation
 
@@ -233,39 +232,6 @@ final class AppUpdater: ObservableObject {
     }
 }
 
-// MARK: - Keychain
-
-enum Keychain {
-    static let service = "com.rokot.l2tp-office"
-
-    static func set(_ value: String, account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-        SecItemDelete(query as CFDictionary)
-        guard !value.isEmpty else { return }
-        var attrs = query
-        attrs[kSecValueData as String] = Data(value.utf8)
-        SecItemAdd(attrs as CFDictionary, nil)
-    }
-
-    static func get(_ account: String) -> String {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-}
-
 // MARK: - VPN Manager
 
 final class VPNManager: ObservableObject {
@@ -281,19 +247,7 @@ final class VPNManager: ObservableObject {
     // Settings
     @Published var server = "" { didSet { persist() } }
     @Published var username = "" { didSet { persist() } }
-    // BR-10: пароль пишем в Keychain с дебаунсом, а не на каждый символ
-    @Published var password = "" {
-        didSet {
-            guard loaded else { return }
-            pwSaveWork?.cancel()
-            let work = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                Keychain.set(self.password, account: "vpn-password")
-            }
-            pwSaveWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
-        }
-    }
+    @Published var password = "" { didSet { persist() } }
     @Published var routeAll = true { didSet { persist() } }
     @Published var networks = "" { didSet { persist() } }
     @Published var autoConnect = false { didSet { persist() } }
@@ -321,7 +275,6 @@ final class VPNManager: ObservableObject {
     static let pppMTU = 1200
     private var loaded = false
     private var timer: Timer?
-    private var pwSaveWork: DispatchWorkItem?
 
     init() {
         let d = UserDefaults.standard
@@ -333,7 +286,7 @@ final class VPNManager: ObservableObject {
             ? "172.16.99.0/24"
             : savedNetworks!
         autoConnect = d.bool(forKey: "autoConnect")
-        password = Keychain.get("vpn-password")
+        password = Self.decodeStoredPassword(d.string(forKey: "vpnPasswordLocal") ?? "")
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         loaded = true
         if d.object(forKey: "routeAll") as? Bool == true {
@@ -362,6 +315,17 @@ final class VPNManager: ObservableObject {
         d.set(routeAll, forKey: "routeAll")
         d.set(networks, forKey: "networks")
         d.set(autoConnect, forKey: "autoConnect")
+        d.set(Self.encodeStoredPassword(password), forKey: "vpnPasswordLocal")
+    }
+
+    private static func encodeStoredPassword(_ value: String) -> String {
+        Data(value.utf8).base64EncodedString()
+    }
+
+    private static func decodeStoredPassword(_ value: String) -> String {
+        guard let data = Data(base64Encoded: value),
+              let decoded = String(data: data, encoding: .utf8) else { return "" }
+        return decoded
     }
 
     // MARK: Validation (BR-02, BR-12)
@@ -449,7 +413,6 @@ final class VPNManager: ObservableObject {
             lastError = "Full-tunnel пока в разработке. Используй «Только выбранные сети»."
             return
         }
-        pwSaveWork?.perform(); pwSaveWork?.cancel()  // пароль в Keychain до подключения
         runPrivileged(request: requestFile(action: "connect"), action: "Подключаюсь…") { result in
             if Self.isCancelled(result) {
                 self.lastError = "Подключение отменено (диалог пароля закрыт)."
@@ -1008,9 +971,9 @@ struct ContentView: View {
                         HStack(spacing: 8) {
                             Group {
                                 if showVPNPassword {
-                                    TextField("Хранится в Keychain", text: $vpn.password)
+                                    TextField("Хранится в настройках приложения", text: $vpn.password)
                                 } else {
-                                    SecureField("Хранится в Keychain", text: $vpn.password)
+                                    SecureField("Хранится в настройках приложения", text: $vpn.password)
                                 }
                             }
                             .textFieldStyle(.roundedBorder)
