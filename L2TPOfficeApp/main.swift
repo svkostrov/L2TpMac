@@ -239,6 +239,7 @@ final class VPNManager: ObservableObject {
     @Published var busy = false
     @Published var localIP = ""
     @Published var remoteIP = ""
+    @Published var remotePingText = ""
     @Published var statusText = "Отключено"
     @Published var lastError = ""
     @Published var logText = ""
@@ -283,6 +284,8 @@ final class VPNManager: ObservableObject {
     static let pppMTU = 1200
     private var loaded = false
     private var timer: Timer?
+    private var pingTimer: Timer?
+    private var pingInProgress = false
     private var reconnectTimer: Timer?
     private var shouldMaintainConnection = false
     private var wasConnected = false
@@ -305,6 +308,9 @@ final class VPNManager: ObservableObject {
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.refresh()
+        }
+        pingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            self?.updateRemotePing()
         }
         if autoConnect {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
@@ -404,6 +410,7 @@ final class VPNManager: ObservableObject {
                 let up = !ip.isEmpty
                 self.isConnected = up && oursAlive
                 self.foreignTunnel = up && !oursAlive
+                if !self.isConnected { self.remotePingText = "" }
                 if !self.busy {
                     if self.reconnecting { self.statusText = "Ожидаю переподключение…" }
                     else if self.isConnected { self.statusText = "Подключено" }
@@ -414,6 +421,36 @@ final class VPNManager: ObservableObject {
                 self.handleReconnectAfterRefresh(up: self.isConnected || self.foreignTunnel)
             }
         }
+    }
+
+    private func updateRemotePing() {
+        guard isConnected, !remoteIP.isEmpty, !pingInProgress else { return }
+        let target = remoteIP
+        pingInProgress = true
+        DispatchQueue.global(qos: .utility).async {
+            let out = Self.run("/sbin/ping", ["-c", "1", "-W", "1000", target])
+            let value = Self.parsePingTime(out)
+            DispatchQueue.main.async {
+                self.pingInProgress = false
+                guard self.isConnected, self.remoteIP == target else {
+                    self.remotePingText = ""
+                    return
+                }
+                self.remotePingText = value.map { "\($0) ms" } ?? "—"
+            }
+        }
+    }
+
+    private static func parsePingTime(_ output: String) -> String? {
+        guard let range = output.range(of: #"time=([0-9.]+) ms"#, options: .regularExpression) else { return nil }
+        var value = String(output[range])
+        value = value.replacingOccurrences(of: "time=", with: "")
+        value = value.replacingOccurrences(of: " ms", with: "")
+        if let number = Double(value) {
+            if number < 10 { return String(format: "%.1f", number) }
+            return String(format: "%.0f", number)
+        }
+        return value
     }
 
     private func handleReconnectAfterRefresh(up: Bool) {
@@ -1016,6 +1053,18 @@ struct MenuContent: View {
                         }
                     }
                     Spacer()
+                    if vpn.isConnected, !vpn.remotePingText.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "waveform.path.ecg")
+                            Text(vpn.remotePingText)
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(vpn.remotePingText == "—" ? .orange : .secondary)
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 7)
+                        .background(.quaternary, in: Capsule())
+                        .help("Ping до PPP-сервера \(vpn.remoteIP)")
+                    }
                     if vpn.busy { ProgressView().controlSize(.small) }
                 }
                 Button {
