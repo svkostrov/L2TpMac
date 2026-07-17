@@ -1,0 +1,680 @@
+import SwiftUI
+import AppKit
+import Combine
+import Security
+import ServiceManagement
+
+// MARK: - Keychain
+
+enum Keychain {
+    static let service = "com.rokot.l2tp-office"
+
+    static func set(_ value: String, account: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(query as CFDictionary)
+        guard !value.isEmpty else { return }
+        var attrs = query
+        attrs[kSecValueData as String] = Data(value.utf8)
+        SecItemAdd(attrs as CFDictionary, nil)
+    }
+
+    static func get(_ account: String) -> String {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+// MARK: - VPN Manager
+
+final class VPNManager: ObservableObject {
+    @Published var isConnected = false      // ppp0 поднят И это НАШ pppd
+    @Published var foreignTunnel = false    // ppp0 поднят, но pppd не наш (BR-07)
+    @Published var busy = false
+    @Published var localIP = ""
+    @Published var remoteIP = ""
+    @Published var statusText = "Отключено"
+    @Published var lastError = ""
+    @Published var logText = ""
+
+    // Settings
+    @Published var server = "" { didSet { persist() } }
+    @Published var username = "" { didSet { persist() } }
+    // BR-10: пароль пишем в Keychain с дебаунсом, а не на каждый символ
+    @Published var password = "" {
+        didSet {
+            guard loaded else { return }
+            pwSaveWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                Keychain.set(self.password, account: "vpn-password")
+            }
+            pwSaveWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+        }
+    }
+    @Published var routeAll = true { didSet { persist() } }
+    @Published var networks = "" { didSet { persist() } }
+    @Published var autoConnect = false { didSet { persist() } }
+    @Published var launchAtLogin = false {
+        didSet {
+            guard loaded else { return }
+            do {
+                if launchAtLogin { try SMAppService.mainApp.register() }
+                else { try SMAppService.mainApp.unregister() }
+            } catch {
+                lastError = "Автозапуск: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    static let logPath = "/tmp/l2tp-office-app.log"
+    static let pidPath = "/var/run/l2tp-office-app.pid"
+    static let optsPath = "/etc/ppp/l2tp-office-app.opts"   // маркер наших pppd в argv
+    private var loaded = false
+    private var timer: Timer?
+    private var pwSaveWork: DispatchWorkItem?
+
+    init() {
+        let d = UserDefaults.standard
+        server   = d.string(forKey: "server") ?? "213.79.84.225"
+        username = d.string(forKey: "username") ?? ""
+        routeAll = d.object(forKey: "routeAll") as? Bool ?? true
+        networks = d.string(forKey: "networks") ?? "172.16.0.0/12, 10.10.10.0/24"
+        autoConnect = d.bool(forKey: "autoConnect")
+        password = Keychain.get("vpn-password")
+        launchAtLogin = (SMAppService.mainApp.status == .enabled)
+        loaded = true
+        refresh()
+        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.refresh()
+        }
+        if autoConnect {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                guard let self, !self.isConnected, !self.foreignTunnel, self.settingsValid else { return }
+                // BR-15: активируем приложение, чтобы админ-диалог имел видимый контекст
+                NSApp.activate(ignoringOtherApps: true)
+                self.connect()
+            }
+        }
+    }
+
+    private func persist() {
+        guard loaded else { return }
+        let d = UserDefaults.standard
+        d.set(server, forKey: "server")
+        d.set(username, forKey: "username")
+        d.set(routeAll, forKey: "routeAll")
+        d.set(networks, forKey: "networks")
+        d.set(autoConnect, forKey: "autoConnect")
+    }
+
+    // MARK: Validation (BR-02, BR-12)
+
+    static func isValidCIDR(_ s: String) -> Bool {
+        let parts = s.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 1 || parts.count == 2 else { return false }
+        let octets = parts[0].split(separator: ".", omittingEmptySubsequences: false)
+        guard octets.count == 4 else { return false }
+        for o in octets {
+            guard !o.isEmpty, o.count <= 3, let v = Int(o), (0...255).contains(v) else { return false }
+        }
+        if parts.count == 2 {
+            guard !parts[1].isEmpty, let p = Int(parts[1]), (0...32).contains(p) else { return false }
+        }
+        return true
+    }
+
+    var serverValid: Bool {
+        let s = server.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty, s.count <= 253 else { return false }
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
+        return s.unicodeScalars.allSatisfy { allowed.contains($0) }
+    }
+
+    var invalidNetworks: [String] {
+        parsedNetworks().filter { !Self.isValidCIDR($0) }
+    }
+
+    var networksValid: Bool {
+        routeAll || (!parsedNetworks().isEmpty && invalidNetworks.isEmpty)
+    }
+
+    var settingsValid: Bool {
+        serverValid &&
+        !username.trimmingCharacters(in: .whitespaces).isEmpty &&
+        !password.isEmpty &&
+        networksValid
+    }
+
+    func parsedNetworks() -> [String] {
+        networks
+            .components(separatedBy: CharacterSet(charactersIn: ",;\n "))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    // MARK: Status polling
+
+    func refresh() {
+        DispatchQueue.global(qos: .utility).async {
+            let out = Self.run("/sbin/ifconfig", ["ppp0"])
+            var ip = "", rip = ""
+            for raw in out.split(separator: "\n") {
+                let t = raw.trimmingCharacters(in: .whitespaces)
+                if t.hasPrefix("inet ") {
+                    let p = t.split(separator: " ").map(String.init)
+                    if p.count >= 4 { ip = p[1]; rip = p[3] }
+                }
+            }
+            // BR-07: наш ли это туннель — ищем pppd с нашим opts-файлом в argv
+            let oursAlive = !Self.run("/usr/bin/pgrep", ["-f", Self.optsPath]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let log = Self.tail(Self.logPath, lines: 60)
+            DispatchQueue.main.async {
+                self.localIP = ip
+                self.remoteIP = rip
+                let up = !ip.isEmpty
+                self.isConnected = up && oursAlive
+                self.foreignTunnel = up && !oursAlive
+                if !self.busy {
+                    if self.isConnected { self.statusText = "Подключено" }
+                    else if self.foreignTunnel { self.statusText = "Активен сторонний PPP-туннель" }
+                    else { self.statusText = "Отключено" }
+                }
+                self.logText = log
+            }
+        }
+    }
+
+    // MARK: Connect / Disconnect
+
+    func connect() {
+        guard !busy, settingsValid, !foreignTunnel else { return }
+        pwSaveWork?.perform(); pwSaveWork?.cancel()  // пароль в Keychain до подключения
+        runAdmin(script: connectScript(), action: "Подключаюсь…") { result in
+            if Self.isCancelled(result) {
+                self.lastError = "Подключение отменено (диалог пароля закрыт)."
+            } else if result.contains("CONNECTED-ROUTEWARN") {
+                self.lastError = "Подключено, но часть маршрутов не добавилась — проверь список сетей."
+            } else if result.contains("CONNECTED") {
+                self.lastError = ""
+            } else if result.contains("AUTHFAIL") {
+                self.lastError = "Ошибка аутентификации: проверь логин и пароль."
+            } else if result.contains("FAILED") {
+                self.lastError = "pppd завершился с ошибкой — смотри лог."
+            } else if result.contains("TIMEOUT") {
+                self.lastError = "Сервер не ответил за 25 секунд."
+            } else if result.isEmpty {
+                self.lastError = "Скрипт не вернул результат — смотри лог."
+            } else {
+                self.lastError = result
+            }
+        }
+    }
+
+    func disconnect() {
+        guard !busy, !foreignTunnel else { return }
+        runAdmin(script: disconnectScript(), action: "Отключаю…") { result in
+            // BR-04: отмена диалога — явное сообщение, туннель остался
+            self.lastError = Self.isCancelled(result) ? "Отключение отменено (диалог пароля закрыт)." : ""
+        }
+    }
+
+    // BR-14: подтверждение выхода при активном туннеле
+    func quit() {
+        if isConnected {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = "VPN-туннель активен"
+            a.informativeText = "Выйти из приложения? Туннель останется работать в фоне, управлять им будет нельзя до следующего запуска."
+            a.alertStyle = .warning
+            a.addButton(withTitle: "Выйти")
+            a.addButton(withTitle: "Отмена")
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+        }
+        NSApp.terminate(nil)
+    }
+
+    private static func isCancelled(_ out: String) -> Bool {
+        let l = out.lowercased()
+        return l.contains("user canceled") || l.contains("user cancelled") || out.contains("(-128)")
+    }
+
+    private func runAdmin(script: String, action: String, completion: @escaping (String) -> Void) {
+        busy = true
+        statusText = action
+        lastError = ""   // OPT-2: старая ошибка не висит во время новой попытки
+        DispatchQueue.global(qos: .userInitiated).async {
+            let tmp = NSTemporaryDirectory() + "l2tp-action-\(UUID().uuidString).sh"
+            defer { try? FileManager.default.removeItem(atPath: tmp) }
+            do {
+                try script.write(toFile: tmp, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tmp)
+            } catch {
+                DispatchQueue.main.async {
+                    self.busy = false
+                    self.lastError = "Не удалось создать временный скрипт."
+                    self.refresh()
+                }
+                return
+            }
+            let osa = "do shell script \"/bin/bash '\(tmp)' 2>&1\" with administrator privileges"
+            let out = Self.run("/usr/bin/osascript", ["-e", osa])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                self.busy = false
+                completion(out)
+                self.refresh()
+            }
+        }
+    }
+
+    private func pppEscape(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+         .replacingOccurrences(of: "\n", with: "")
+    }
+
+    private func connectScript() -> String {
+        var opts = """
+        plugin L2TP.ppp
+        l2tpnoipsec
+        nodetach
+        remoteaddress \(server.trimmingCharacters(in: .whitespaces))
+        user "\(pppEscape(username))"
+        password "\(pppEscape(password))"
+        noauth
+        noccp
+        mtu 1400
+        mru 1400
+        lcp-echo-interval 30
+        lcp-echo-failure 3
+        debug
+        logfile \(Self.logPath)
+        """
+        if routeAll {
+            opts += "\ndefaultroute\nusepeerdns"
+        }
+        var routeCmds = ""
+        if !routeAll {
+            for net in parsedNetworks() where Self.isValidCIDR(net) {
+                // BR-02: фиксируем неудачные route add вместо молчаливого игнора
+                routeCmds += "/sbin/route -n add -net '\(net)' -interface ppp0 >/dev/null 2>&1 || RTERR=1\n"
+            }
+        }
+        return """
+        #!/bin/bash
+        # Сгенерировано L2TP Office.app
+        OPTS=\(Self.optsPath)
+        PIDF=\(Self.pidPath)
+        # BR-11: opts-файл с паролем удаляется при любом завершении скрипта
+        trap 'rm -f "$OPTS"' EXIT
+        # BR-06: перед kill проверяем, что PID из pidfile действительно pppd
+        OLDPID=$(cat "$PIDF" 2>/dev/null)
+        if [ -n "$OLDPID" ]; then
+          case "$(ps -p "$OLDPID" -o comm= 2>/dev/null)" in
+            *pppd) kill "$OLDPID" 2>/dev/null; sleep 1 ;;
+          esac
+        fi
+        umask 077
+        cat > "$OPTS" <<'PPPEOF'
+        \(opts)
+        PPPEOF
+        : > \(Self.logPath); chmod 644 \(Self.logPath)
+        /usr/sbin/pppd file "$OPTS" >/dev/null 2>&1 &
+        PID=$!
+        echo "$PID" > "$PIDF"
+        RTERR=
+        for i in $(seq 1 25); do
+          sleep 1
+          if ! kill -0 "$PID" 2>/dev/null; then
+            if grep -qi 'auth.*fail\\|CHAP.*fail' \(Self.logPath); then echo "AUTHFAIL"; else echo "FAILED"; fi
+            exit 0
+          fi
+          IP=$(/sbin/ifconfig ppp0 2>/dev/null | awk '/inet /{print $2}')
+          if [ -n "$IP" ]; then
+            sleep 1
+        \(routeCmds)
+            if [ -n "$RTERR" ]; then echo "CONNECTED-ROUTEWARN $IP"; else echo "CONNECTED $IP"; fi
+            exit 0
+          fi
+        done
+        kill "$PID" 2>/dev/null
+        echo "TIMEOUT"
+        """
+    }
+
+    private func disconnectScript() -> String {
+        return """
+        #!/bin/bash
+        PIDF=\(Self.pidPath)
+        # BR-05/BR-06: убиваем ТОЛЬКО свои pppd — по маркеру opts-файла в argv
+        # и по pidfile с проверкой имени процесса. Чужие pppd не трогаем.
+        PIDS=$(/usr/bin/pgrep -f '\(Self.optsPath)')
+        OLDPID=$(cat "$PIDF" 2>/dev/null)
+        if [ -n "$OLDPID" ]; then
+          case "$(ps -p "$OLDPID" -o comm= 2>/dev/null)" in
+            *pppd) PIDS="$PIDS $OLDPID" ;;
+          esac
+        fi
+        rm -f "$PIDF"
+        if [ -z "$(echo $PIDS | tr -d ' ')" ]; then echo "DONE (нечего отключать)"; exit 0; fi
+        for P in $PIDS; do kill -TERM "$P" 2>/dev/null; done
+        # даём pppd корректно снять маршруты и DNS
+        for i in 1 2 3 4 5; do
+          ALIVE=
+          for P in $PIDS; do kill -0 "$P" 2>/dev/null && ALIVE=1; done
+          [ -z "$ALIVE" ] && break
+          sleep 1
+        done
+        for P in $PIDS; do kill -KILL "$P" 2>/dev/null; done
+        sleep 1
+        # восстановить default route, если он пропал вместе с ppp0
+        if ! /sbin/route -n get default >/dev/null 2>&1; then
+          for IF in $(/sbin/ifconfig -lu); do
+            case "$IF" in en*) ;; *) continue ;; esac
+            /sbin/ifconfig "$IF" 2>/dev/null | grep -q 'inet ' || continue
+            GW=$(/usr/sbin/ipconfig getoption "$IF" router 2>/dev/null)
+            if [ -n "$GW" ]; then
+              /sbin/route -n add default "$GW" >/dev/null 2>&1 && break
+            fi
+          done
+        fi
+        /usr/bin/dscacheutil -flushcache 2>/dev/null
+        /usr/bin/killall -HUP mDNSResponder 2>/dev/null
+        echo "DONE"
+        """
+    }
+
+    // MARK: Helpers
+
+    static func run(_ path: String, _ args: [String]) -> String {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        do { try p.run() } catch { return "" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    static func tail(_ path: String, lines: Int) -> String {
+        guard let s = try? String(contentsOfFile: path, encoding: .utf8) else { return "Лог пока пуст." }
+        return s.split(separator: "\n").suffix(lines).joined(separator: "\n")
+    }
+}
+
+// MARK: - Status dot (BR-16: busy имеет приоритет)
+
+func statusColor(_ vpn: VPNManager) -> Color {
+    if vpn.busy { return .orange }
+    if vpn.isConnected { return .green }
+    if vpn.foreignTunnel { return .yellow }
+    return .red
+}
+
+// MARK: - Main window
+
+struct ContentView: View {
+    @EnvironmentObject var vpn: VPNManager
+
+    private var connectDisabled: Bool {
+        vpn.isConnected || vpn.busy || vpn.foreignTunnel || !vpn.settingsValid
+    }
+    private var disconnectDisabled: Bool {
+        !vpn.isConnected || vpn.busy || vpn.foreignTunnel
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Status
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(statusColor(vpn))
+                    .frame(width: 14, height: 14)
+                Text(vpn.statusText).font(.title2.weight(.semibold))
+                if vpn.isConnected {
+                    Text("\(vpn.localIP) → \(vpn.remoteIP)")
+                        .font(.title3).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if vpn.busy { ProgressView().controlSize(.small) }
+            }
+
+            if !vpn.lastError.isEmpty {
+                Label(vpn.lastError, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+            }
+            if vpn.foreignTunnel {
+                Label("Интерфейс ppp0 занят другим PPP-клиентом — управление недоступно.", systemImage: "info.circle.fill")
+                    .foregroundStyle(.yellow)
+                    .font(.callout)
+            }
+
+            // Settings
+            GroupBox("Настройки подключения") {
+                Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 8) {
+                    GridRow {
+                        Text("Сервер")
+                        VStack(alignment: .leading, spacing: 2) {
+                            TextField("IP или hostname", text: $vpn.server)
+                                .textFieldStyle(.roundedBorder)
+                            if !vpn.server.isEmpty && !vpn.serverValid {
+                                Text("Недопустимый адрес: только буквы, цифры, точки и дефисы, без пробелов")
+                                    .font(.caption).foregroundStyle(.red)
+                            }
+                        }
+                    }
+                    GridRow {
+                        Text("Логин")
+                        TextField("Имя пользователя VPN", text: $vpn.username)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    GridRow {
+                        Text("Пароль")
+                        SecureField("Хранится в Keychain", text: $vpn.password)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    GridRow {
+                        Text("Трафик")
+                        Picker("", selection: $vpn.routeAll) {
+                            Text("Весь трафик через VPN").tag(true)
+                            Text("Только выбранные сети").tag(false)
+                        }
+                        .pickerStyle(.radioGroup)
+                        .labelsHidden()
+                    }
+                    if !vpn.routeAll {
+                        GridRow {
+                            Text("Сети")
+                            VStack(alignment: .leading, spacing: 2) {
+                                TextField("например: 172.16.0.0/12, 10.10.10.0/24", text: $vpn.networks)
+                                    .textFieldStyle(.roundedBorder)
+                                if !vpn.invalidNetworks.isEmpty {
+                                    // BR-02: невалидные CIDR подсвечиваются, подключение блокируется
+                                    Text("Неверный CIDR: \(vpn.invalidNetworks.joined(separator: ", "))")
+                                        .font(.caption).foregroundStyle(.red)
+                                } else if vpn.parsedNetworks().isEmpty {
+                                    Text("Укажи хотя бы одну сеть")
+                                        .font(.caption).foregroundStyle(.red)
+                                } else {
+                                    // BR-13: поясняем поведение DNS в split-режиме
+                                    Text("CIDR через запятую или пробел. DNS VPN-сервера в этом режиме не используется")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(6)
+                .disabled(vpn.isConnected || vpn.busy)
+            }
+
+            GroupBox("Автозапуск") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Запускать приложение при входе в систему", isOn: $vpn.launchAtLogin)
+                    Toggle("Подключаться автоматически при запуске приложения", isOn: $vpn.autoConnect)
+                }
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            // Buttons (BR-01: без keyboardShortcut — Enter в полях больше не подключает)
+            HStack(spacing: 10) {
+                Button {
+                    vpn.connect()
+                } label: {
+                    Label("Подключить", systemImage: "lock.fill").frame(maxWidth: .infinity)
+                }
+                .controlSize(.large)
+                .disabled(connectDisabled)
+                .opacity(connectDisabled ? 0.45 : 1.0)   // BR-08: явная индикация disabled
+
+                Button {
+                    vpn.disconnect()
+                } label: {
+                    Label("Отключить", systemImage: "lock.open").frame(maxWidth: .infinity)
+                }
+                .controlSize(.large)
+                .disabled(disconnectDisabled)
+                .opacity(disconnectDisabled ? 0.45 : 1.0)
+            }
+
+            // Log
+            GroupBox("Лог pppd") {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(vpn.logText)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .id("logEnd")
+                    }
+                    .onAppear {   // OPT-3: скролл вниз при первом открытии
+                        proxy.scrollTo("logEnd", anchor: .bottom)
+                    }
+                    .onChange(of: vpn.logText) { _ in
+                        proxy.scrollTo("logEnd", anchor: .bottom)
+                    }
+                }
+                .frame(minHeight: 150)
+            }
+        }
+        .padding(16)
+        // BR-03: минимальная высота соответствует реальному контенту (режим split + ошибки)
+        .frame(minWidth: 560, minHeight: 680)
+    }
+}
+
+// MARK: - Menu bar
+
+struct MenuContent: View {
+    @EnvironmentObject var vpn: VPNManager
+    @Environment(\.openWindow) private var openWindow
+
+    private var connectDisabled: Bool {
+        vpn.isConnected || vpn.busy || vpn.foreignTunnel || !vpn.settingsValid
+    }
+    private var disconnectDisabled: Bool {
+        !vpn.isConnected || vpn.busy || vpn.foreignTunnel
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(statusColor(vpn))
+                    .frame(width: 10, height: 10)
+                Text(vpn.isConnected ? "Подключено · \(vpn.localIP)" : vpn.statusText)
+                    .font(.headline)
+                    .lineLimit(2)
+                Spacer()
+                if vpn.busy { ProgressView().controlSize(.small) }
+            }
+            HStack(spacing: 8) {
+                Button {
+                    vpn.connect()
+                } label: {
+                    Label("Подключить", systemImage: "lock.fill").frame(maxWidth: .infinity)
+                }
+                .disabled(connectDisabled)
+                .opacity(connectDisabled ? 0.5 : 1.0)
+
+                Button {
+                    vpn.disconnect()
+                } label: {
+                    Label("Отключить", systemImage: "lock.open").frame(maxWidth: .infinity)
+                }
+                .disabled(disconnectDisabled)
+                .opacity(disconnectDisabled ? 0.5 : 1.0)
+            }
+            Divider()
+            HStack {
+                Button("Открыть окно") {
+                    // BR-17: openWindow из MenuBarExtra не всегда открывает закрытое окно —
+                    // сначала ищем существующее окно и показываем его, иначе создаём новое
+                    NSApp.activate(ignoringOtherApps: true)
+                    if let win = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }) {
+                        if win.isMiniaturized { win.deminiaturize(nil) }
+                        win.makeKeyAndOrderFront(nil)
+                    } else {
+                        openWindow(id: "main")
+                    }
+                }
+                Spacer()
+                Button("Выход") { vpn.quit() }   // BR-14: с подтверждением при активном туннеле
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .font(.callout)
+        }
+        .padding(12)
+        .frame(width: 280)
+    }
+}
+
+struct MenuIcon: View {
+    @ObservedObject var vpn: VPNManager
+    var body: some View {
+        // Замкнут при активном туннеле, разомкнут без подключения
+        Image(systemName: vpn.isConnected ? "lock.fill" : "lock.open")
+    }
+}
+
+// MARK: - App
+
+@main
+struct L2TPOfficeApp: App {
+    @StateObject private var vpn = VPNManager()
+
+    var body: some Scene {
+        WindowGroup("L2TP Office", id: "main") {
+            ContentView().environmentObject(vpn)
+        }
+        // BR-03: окно нельзя сделать меньше минимального контента, больше — можно
+        .windowResizability(.contentMinSize)
+
+        MenuBarExtra {
+            MenuContent().environmentObject(vpn)
+        } label: {
+            MenuIcon(vpn: vpn)
+        }
+        .menuBarExtraStyle(.window)
+    }
+}
