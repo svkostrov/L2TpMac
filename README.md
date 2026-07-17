@@ -83,6 +83,7 @@ ifconfig ppp0               # статус
 
 ## История версий
 
+- **1.32** — усилено восстановление сети при отключении: root-helper удаляет split-маршруты, очищает PPP-состояние SystemConfiguration, возвращает default route через активный `en*`, восстанавливает DNS через DHCP/router fallback и повторно проверяет маршрут после cleanup.
 - **1.31** — добавлена кнопка «Очистить лог»; при запуске приложение очищает лог локально без запроса пароля, а ручная очистка выполняется через root-helper и работает с root-owned логом.
 - **1.30** — добавлены повторные попытки UDP-send/reconnect в L2TP helper при transient-ошибках macOS `can't assign requested address`, `network is unreachable`, `no route to host` во время старта из `pppd pty`.
 - **1.29** — исправлена отправка UDP в user-space L2TP helper: вместо wildcard `0.0.0.0` используется connected UDP socket, чтобы macOS корректно выбирала исходный адрес и не падала с `can't assign requested address`.

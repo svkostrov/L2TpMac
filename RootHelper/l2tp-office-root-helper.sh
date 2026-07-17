@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.31"
+ROOT_HELPER_VERSION="1.32"
 
 die() {
   echo "$1"
@@ -44,42 +44,87 @@ valid_cidr() {
 }
 
 cleanup_ppp_state() {
-  if ! /sbin/ifconfig ppp0 >/dev/null 2>&1; then
-    for K in $(echo 'list State:/Network/Service/[^/]+/IPv4' | /usr/sbin/scutil | /usr/bin/awk '{print $NF}'); do
-      if echo "show $K" | /usr/sbin/scutil | /usr/bin/grep -q 'InterfaceName : ppp0'; then
-        printf 'remove %s\nquit\n' "$K" | /usr/sbin/scutil >/dev/null 2>&1 || true
-      fi
-    done
-  fi
+  for K in $(printf 'list State:/Network/Service/[^/]+/IPv4\nlist State:/Network/Service/[^/]+/DNS\nlist State:/Network/Service/[^/]+/PPP\nquit\n' | /usr/sbin/scutil | /usr/bin/awk '{print $NF}'); do
+    if printf 'show %s\nquit\n' "$K" | /usr/sbin/scutil | /usr/bin/grep -q 'InterfaceName : ppp0'; then
+      printf 'remove %s\nquit\n' "$K" | /usr/sbin/scutil >/dev/null 2>&1 || true
+    fi
+  done
 }
 
-restore_network() {
-  cleanup_ppp_state
-  for T in 1 2 3 4 5; do
-    /sbin/route -n get default 2>/dev/null | /usr/bin/grep -q 'interface: en' && break
-    for IF in $(/sbin/ifconfig -lu); do
-      case "$IF" in en*) ;; *) continue ;; esac
-      /sbin/ifconfig "$IF" 2>/dev/null | /usr/bin/grep -q 'inet ' || continue
-      GW=$(/usr/sbin/ipconfig getoption "$IF" router 2>/dev/null)
-      if [ -n "$GW" ]; then
-        /sbin/route -n delete default >/dev/null 2>&1 || true
-        /sbin/route -n add default "$GW" >/dev/null 2>&1 || true
-        break
-      fi
+active_en_interfaces() {
+  for IF in $(/sbin/ifconfig -lu); do
+    case "$IF" in en*) ;; *) continue ;; esac
+    /sbin/ifconfig "$IF" 2>/dev/null | /usr/bin/grep -q 'status: active' || continue
+    /sbin/ifconfig "$IF" 2>/dev/null | /usr/bin/grep -q 'inet ' || continue
+    printf '%s\n' "$IF"
+  done
+}
+
+default_route_is_en() {
+  /sbin/route -n get default 2>/dev/null | /usr/bin/awk '/interface:/{print $2; exit}' | /usr/bin/grep -q '^en'
+}
+
+dns_has_server() {
+  /usr/sbin/scutil --dns 2>/dev/null | /usr/bin/grep -q 'nameserver\[[0-9][0-9]*\]'
+}
+
+restore_default_route() {
+  local ifc gw i
+  for i in 1 2 3 4 5 6 7 8; do
+    default_route_is_en && return 0
+    for ifc in $(active_en_interfaces); do
+      gw=$(/usr/sbin/ipconfig getoption "$ifc" router 2>/dev/null)
+      [ -n "$gw" ] || continue
+      /sbin/route -n delete default >/dev/null 2>&1 || true
+      /sbin/route -n add default "$gw" >/dev/null 2>&1 || true
+      default_route_is_en && return 0
     done
     sleep 1
   done
+  return 1
+}
+
+restore_dns() {
+  local ifc gw i
+  dns_has_server && return 0
+  for ifc in $(active_en_interfaces); do
+    if /usr/sbin/ipconfig getpacket "$ifc" 2>/dev/null | /usr/bin/grep -q yiaddr; then
+      /usr/sbin/ipconfig set "$ifc" DHCP >/dev/null 2>&1 || true
+    fi
+  done
+  for i in 1 2 3 4 5; do
+    dns_has_server && return 0
+    sleep 1
+  done
+  for ifc in $(active_en_interfaces); do
+    gw=$(/usr/sbin/ipconfig getoption "$ifc" router 2>/dev/null)
+    [ -n "$gw" ] || continue
+    printf 'd.init\nd.add ServerAddresses * %s\nset State:/Network/Global/DNS\nquit\n' "$gw" | /usr/sbin/scutil >/dev/null 2>&1 || true
+    dns_has_server && return 0
+  done
+  return 1
+}
+
+delete_split_routes() {
+  local networks="$1" net
+  for net in $networks; do
+    valid_cidr "$net" || continue
+    /sbin/route -n delete -net "$net" >/dev/null 2>&1 || true
+  done
+}
+
+restore_network() {
+  local networks="${1:-}"
+  cleanup_ppp_state
+  delete_split_routes "$networks"
   for K in State:/Network/Global/DNS State:/Network/Global/IPv4; do
     printf 'remove %s\nquit\n' "$K" | /usr/sbin/scutil >/dev/null 2>&1 || true
   done
-  for IF in $(/sbin/ifconfig -lu); do
-    case "$IF" in en*) ;; *) continue ;; esac
-    if /usr/sbin/ipconfig getpacket "$IF" 2>/dev/null | /usr/bin/grep -q yiaddr; then
-      /usr/sbin/ipconfig set "$IF" DHCP >/dev/null 2>&1 || true
-    fi
-  done
+  restore_default_route || true
+  restore_dns || true
   /usr/bin/dscacheutil -flushcache 2>/dev/null || true
   /usr/bin/killall -HUP mDNSResponder 2>/dev/null || true
+  restore_default_route || true
 }
 
 stop_tunnel_processes() {
@@ -106,9 +151,11 @@ stop_tunnel_processes() {
 }
 
 disconnect_tunnel() {
+  local networks
+  networks="$(decode_key NETWORKS)"
   stop_tunnel_processes
   sleep 1
-  restore_network
+  restore_network "$networks"
 }
 
 clear_log() {

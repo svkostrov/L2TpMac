@@ -14,7 +14,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.31"
+private let requiredRootHelperVersion = "1.32"
 
 // MARK: - GitHub updater
 
