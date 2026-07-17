@@ -924,7 +924,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .controlSize(.large)
-                .tint(connectingInProgress ? .red : .accentColor)
+                .tint(.red)
                 .disabled(stopButtonDisabled)
                 .opacity(stopButtonDisabled ? 0.45 : 1.0)
             }
@@ -1020,7 +1020,7 @@ struct MenuContent: View {
                     )
                     .frame(maxWidth: .infinity)
                 }
-                .tint(connectingInProgress ? .red : .accentColor)
+                .tint(.red)
                 .disabled(stopButtonDisabled)
                 .opacity(stopButtonDisabled ? 0.5 : 1.0)
             }
