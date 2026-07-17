@@ -187,7 +187,7 @@ func (c *l2tpClient) handshake() error {
 		switch cp.msgType {
 		case msgSCCRP:
 			c.peerTunnel = u16(cp.avps[avpTunnelID])
-			c.nr = cp.ns + 1
+			c.setNR(cp.ns + 1)
 			if err := c.sendControl(c.peerTunnel, 0, []avp{avpU16(avpMessageType, msgSCCCN)}); err != nil {
 				return err
 			}
@@ -200,7 +200,7 @@ func (c *l2tpClient) handshake() error {
 			}
 		case msgICRP:
 			c.peerSession = u16(cp.avps[avpSessionID])
-			c.nr = cp.ns + 1
+			c.setNR(cp.ns + 1)
 			if c.peerSession == 0 {
 				return fmt.Errorf("peer did not assign session id")
 			}
@@ -216,11 +216,11 @@ func (c *l2tpClient) handshake() error {
 		case msgStopCCN, msgCDN:
 			return fmt.Errorf("peer closed control/session during handshake")
 		case msgHELLO:
-			c.nr = cp.ns + 1
+			c.setNR(cp.ns + 1)
 			_ = c.sendAck(c.peerTunnel)
 		default:
 			if cp.msgType != 0 {
-				c.nr = cp.ns + 1
+				c.setNR(cp.ns + 1)
 				_ = c.sendAck(c.peerTunnel)
 			}
 		}
@@ -244,7 +244,7 @@ func (c *l2tpClient) readLoop(pppOut io.Writer, errs chan<- error) {
 				continue
 			}
 			if cp.msgType != 0 {
-				c.nr = cp.ns + 1
+				c.setNR(cp.ns + 1)
 				if cp.msgType == msgHELLO {
 					_ = c.sendAck(c.peerTunnel)
 				} else if cp.msgType == msgStopCCN || cp.msgType == msgCDN {
@@ -289,6 +289,9 @@ func (c *l2tpClient) sendControl(tid, sid uint16, avps []avp) error {
 }
 
 func (c *l2tpClient) sendAck(tid uint16) error {
+	c.ackMu.Lock()
+	defer c.ackMu.Unlock()
+
 	var pkt bytes.Buffer
 	_ = binary.Write(&pkt, binary.BigEndian, uint16(0xc802))
 	_ = binary.Write(&pkt, binary.BigEndian, uint16(12))
@@ -297,6 +300,12 @@ func (c *l2tpClient) sendAck(tid uint16) error {
 	_ = binary.Write(&pkt, binary.BigEndian, c.ns)
 	_ = binary.Write(&pkt, binary.BigEndian, c.nr)
 	return c.writePacket(pkt.Bytes())
+}
+
+func (c *l2tpClient) setNR(nr uint16) {
+	c.ackMu.Lock()
+	c.nr = nr
+	c.ackMu.Unlock()
 }
 
 func (c *l2tpClient) readControl() (*controlPacket, error) {
@@ -336,25 +345,8 @@ func (c *l2tpClient) writePacket(pkt []byte) error {
 		}
 		c.log.Printf("udp write failed, retrying (%d/12): %v", attempt, err)
 		time.Sleep(500 * time.Millisecond)
-		if reconnectErr := c.reconnectUDP(); reconnectErr != nil {
-			c.log.Printf("udp reconnect failed: %v", reconnectErr)
-		}
 	}
 	return lastErr
-}
-
-func (c *l2tpClient) reconnectUDP() error {
-	conn, err := net.DialUDP("udp4", nil, c.remote)
-	if err != nil {
-		return err
-	}
-	old := c.conn
-	c.conn = conn
-	if old != nil {
-		_ = old.Close()
-	}
-	c.log.Printf("udp reconnected: local=%s remote=%s", conn.LocalAddr(), c.remote)
-	return nil
 }
 
 func isTransientUDPWriteError(err error) bool {

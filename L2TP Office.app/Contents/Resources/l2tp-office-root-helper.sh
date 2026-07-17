@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.50"
+ROOT_HELPER_VERSION="1.51"
 
 die() {
   echo "$1"
@@ -22,7 +22,15 @@ ppp_escape() {
 }
 
 valid_host() {
-  [[ "$1" =~ ^[A-Za-z0-9.-]{1,253}$ ]]
+  local host="$1" label
+  [[ "$host" =~ ^[A-Za-z0-9.-]{1,253}$ ]] || return 1
+  [[ "$host" != .* && "$host" != *. && "$host" != -* && "$host" != *- ]] || return 1
+  IFS=. read -ra labels <<< "$host"
+  for label in "${labels[@]}"; do
+    [ -n "$label" ] || return 1
+    [[ "$label" != -* && "$label" != *- ]] || return 1
+  done
+  return 0
 }
 
 valid_cidr() {
@@ -54,6 +62,9 @@ valid_ipv4() {
 }
 
 cleanup_ppp_state() {
+  if /sbin/ifconfig ppp0 >/dev/null 2>&1; then
+    return 0
+  fi
   for K in $(printf 'list State:/Network/Service/[^/]+/IPv4\nlist State:/Network/Service/[^/]+/DNS\nlist State:/Network/Service/[^/]+/PPP\nquit\n' | /usr/sbin/scutil | /usr/bin/awk '{print $NF}'); do
     if printf 'show %s\nquit\n' "$K" | /usr/sbin/scutil | /usr/bin/grep -q 'InterfaceName : ppp0'; then
       printf 'remove %s\nquit\n' "$K" | /usr/sbin/scutil >/dev/null 2>&1 || true
@@ -228,7 +239,8 @@ ensure_server_route() {
 }
 
 connect_tunnel() {
-  local server username password networks route_all user_esc pass_esc pid ip peer rterr
+  local server username password networks route_all user_esc pass_esc pid ip peer rterr start_line
+  trap 'rm -f "$OPTS"' EXIT
   server="$(decode_key SERVER)"
   username="$(decode_key USERNAME)"
   password="$(decode_key PASSWORD)"
@@ -274,6 +286,7 @@ logfile $LOG
 PPPEOF
   touch "$LOG" 2>/dev/null || true
   chmod 644 "$LOG" 2>/dev/null || true
+  start_line=$(( $(/usr/bin/wc -l < "$LOG" 2>/dev/null || echo 0) + 1 ))
   /usr/sbin/pppd file "$OPTS" >>"$LOG" 2>&1 &
   pid=$!
   echo "$pid" > "$PIDF"
@@ -281,7 +294,7 @@ PPPEOF
   for i in $(seq 1 25); do
     sleep 1
     if ! kill -0 "$pid" 2>/dev/null; then
-      if /usr/bin/grep -qi 'auth.*fail\|CHAP.*fail' "$LOG"; then echo "AUTHFAIL"; else echo "FAILED"; fi
+      if /usr/bin/tail -n +"$start_line" "$LOG" 2>/dev/null | /usr/bin/grep -qi 'auth.*fail\|CHAP.*fail'; then echo "AUTHFAIL"; else echo "FAILED"; fi
       exit 0
     fi
     ip=$(/sbin/ifconfig ppp0 2>/dev/null | /usr/bin/awk '/inet /{print $2; exit}')

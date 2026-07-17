@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.50"
+private let requiredRootHelperVersion = "1.51"
 
 // MARK: - GitHub updater
 
@@ -175,9 +175,19 @@ final class AppUpdater: ObservableObject {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", osa]
+        process.terminationHandler = { proc in
+            DispatchQueue.main.async {
+                self.installing = false
+                if proc.terminationStatus == 0 {
+                    self.statusText = "Обновление установлено"
+                } else {
+                    self.statusText = "Установка обновления отменена или не выполнена."
+                    self.showMessage(self.statusText)
+                }
+            }
+        }
         do {
             try process.run()
-            NSApp.terminate(nil)
         } catch {
             installing = false
             statusText = "Не удалось запустить установщик."
@@ -243,6 +253,7 @@ final class VPNManager: ObservableObject {
     @Published var statusText = "Отключено"
     @Published var lastError = ""
     @Published var logText = ""
+    @Published var rootHelperNeedsUpdate = false
     @Published var reconnectEnabled = false {
         didSet {
             persist()
@@ -308,6 +319,7 @@ final class VPNManager: ObservableObject {
         loaded = true
         d.removeObject(forKey: "routeAll")
         clearLogOnLaunch()
+        updateRootHelperStatus()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.refresh()
@@ -367,7 +379,12 @@ final class VPNManager: ObservableObject {
         let s = server.trimmingCharacters(in: .whitespaces)
         guard !s.isEmpty, s.count <= 253 else { return false }
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-")
-        return s.unicodeScalars.allSatisfy { allowed.contains($0) }
+        guard s.unicodeScalars.allSatisfy({ allowed.contains($0) }),
+              !s.hasPrefix("."), !s.hasSuffix("."),
+              !s.hasPrefix("-"), !s.hasSuffix("-") else { return false }
+        return s.split(separator: ".", omittingEmptySubsequences: false).allSatisfy { label in
+            !label.isEmpty && !label.hasPrefix("-") && !label.hasSuffix("-")
+        }
     }
 
     var invalidNetworks: [String] {
@@ -462,7 +479,7 @@ final class VPNManager: ObservableObject {
     }
 
     private func rebuildTunnelAfterPingLossIfNeeded() {
-        guard remotePingFailures >= 2,
+        guard remotePingFailures >= 6,
               reconnectEnabled,
               shouldMaintainConnection,
               isConnected,
@@ -532,7 +549,7 @@ final class VPNManager: ObservableObject {
     }
 
     private static func currentSystemPathSignature() -> String {
-        ["default", "1.1.1.1", "129.0.0.1"]
+        ["default", "1.1.1.1", "1.0.0.1"]
             .map { routeSignature(for: $0) }
             .joined(separator: "|")
     }
@@ -721,6 +738,7 @@ final class VPNManager: ObservableObject {
                 DispatchQueue.main.async {
                     self.busy = false
                     self.lastError = "Не удалось создать request-файл."
+                    self.updateRootHelperStatus()
                     self.refresh()
                 }
                 return
@@ -733,10 +751,14 @@ final class VPNManager: ObservableObject {
                         self.lastError = Self.isCancelled(setup)
                             ? "Установка helper-а отменена."
                             : "Не удалось установить helper: \(setup)"
+                        self.updateRootHelperStatus()
                         self.refresh()
                     }
                     return
                 }
+            }
+            DispatchQueue.main.async {
+                self.rootHelperNeedsUpdate = false
             }
             var out = Self.runRootHelper(requestPath: requestPath)
             out = out.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -751,6 +773,7 @@ final class VPNManager: ObservableObject {
             DispatchQueue.main.async {
                 self.busy = false
                 completion(out)
+                self.updateRootHelperStatus()
                 self.refresh()
             }
         }
@@ -792,6 +815,15 @@ final class VPNManager: ObservableObject {
     private static func clearLogFileLocally() {
         try? "".write(toFile: logPath, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: logPath)
+    }
+
+    private func updateRootHelperStatus() {
+        DispatchQueue.global(qos: .utility).async {
+            let installed = Self.rootHelperInstalled()
+            DispatchQueue.main.async {
+                self.rootHelperNeedsUpdate = !installed
+            }
+        }
     }
 
     private static func runRootHelper(requestPath: String) -> String {
@@ -988,6 +1020,11 @@ struct ContentView: View {
                     .foregroundStyle(.yellow)
                     .font(.callout)
             }
+            if vpn.rootHelperNeedsUpdate {
+                Label("Системный компонент нужно установить или обновить. При следующем действии macOS попросит пароль администратора.", systemImage: "wrench.and.screwdriver.fill")
+                    .foregroundStyle(.secondary)
+                    .font(.callout)
+            }
 
             // Settings
             GroupBox("Настройки подключения") {
@@ -1005,28 +1042,40 @@ struct ContentView: View {
                     }
                     GridRow {
                         Text("Логин")
-                        TextField("Имя пользователя VPN", text: $vpn.username)
-                            .textFieldStyle(.roundedBorder)
+                        VStack(alignment: .leading, spacing: 2) {
+                            TextField("Имя пользователя VPN", text: $vpn.username)
+                                .textFieldStyle(.roundedBorder)
+                            if vpn.username.trimmingCharacters(in: .whitespaces).isEmpty {
+                                Text("Укажи логин VPN")
+                                    .font(.caption).foregroundStyle(.red)
+                            }
+                        }
                     }
                     GridRow {
                         Text("Пароль")
-                        HStack(spacing: 8) {
-                            Group {
-                                if showVPNPassword {
-                                    TextField("Пароль VPN", text: $vpn.password)
-                                } else {
-                                    SecureField("Пароль VPN", text: $vpn.password)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 8) {
+                                Group {
+                                    if showVPNPassword {
+                                        TextField("Пароль VPN", text: $vpn.password)
+                                    } else {
+                                        SecureField("Пароль VPN", text: $vpn.password)
+                                    }
                                 }
+                                .textFieldStyle(.roundedBorder)
+                                Button {
+                                    showVPNPassword.toggle()
+                                } label: {
+                                    Image(systemName: showVPNPassword ? "eye.slash" : "eye")
+                                        .frame(width: 22)
+                                }
+                                .buttonStyle(.plain)
+                                .help(showVPNPassword ? "Скрыть пароль" : "Показать пароль")
                             }
-                            .textFieldStyle(.roundedBorder)
-                            Button {
-                                showVPNPassword.toggle()
-                            } label: {
-                                Image(systemName: showVPNPassword ? "eye.slash" : "eye")
-                                    .frame(width: 22)
+                            if vpn.password.isEmpty {
+                                Text("Укажи пароль VPN")
+                                    .font(.caption).foregroundStyle(.red)
                             }
-                            .buttonStyle(.plain)
-                            .help(showVPNPassword ? "Скрыть пароль" : "Показать пароль")
                         }
                     }
                     GridRow {
@@ -1107,7 +1156,7 @@ struct ContentView: View {
                     }
                     ScrollViewReader { proxy in
                         ScrollView {
-                            Text(vpn.logText)
+                            Text(vpn.logText.isEmpty ? "Лог пока пуст." : vpn.logText)
                                 .font(.system(size: 11, design: .monospaced))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1126,7 +1175,7 @@ struct ContentView: View {
         }
         .padding(16)
         // BR-03: минимальная высота соответствует реальному контенту (режим split + ошибки)
-        .frame(minWidth: 560, minHeight: 680)
+        .frame(minWidth: 560, minHeight: 730)
     }
 }
 
@@ -1307,7 +1356,7 @@ struct L2TPOfficeApp: App {
     @StateObject private var updater = AppUpdater()
 
     var body: some Scene {
-        WindowGroup("L2TP Office", id: "main") {
+        Window("L2TP Office", id: "main") {
             ContentView()
                 .environmentObject(vpn)
                 .environmentObject(updater)
@@ -1317,6 +1366,9 @@ struct L2TPOfficeApp: App {
         }
         // BR-03: окно нельзя сделать меньше минимального контента, больше — можно
         .windowResizability(.contentMinSize)
+        .commands {
+            CommandGroup(replacing: .newItem) { }
+        }
 
         MenuBarExtra {
             MenuContent()

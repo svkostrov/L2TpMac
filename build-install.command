@@ -39,6 +39,21 @@ rm -rf "/Applications/$APP"
 ditto "$APP" "/Applications/$APP"
 touch "/Applications/$APP"
 
+echo "==> Обновление root-helper"
+USER_NAME="$(id -un)"
+ROOT_HELPER="/Library/PrivilegedHelperTools/com.rokot.l2tp-office.root-helper"
+SUDOERS="/etc/sudoers.d/l2tp-office"
+sudo /bin/mkdir -p /Library/PrivilegedHelperTools /etc/sudoers.d
+sudo /bin/cp "/Applications/$APP/Contents/Resources/l2tp-office-root-helper.sh" "$ROOT_HELPER"
+sudo /usr/sbin/chown root:wheel "$ROOT_HELPER"
+sudo /bin/chmod 0500 "$ROOT_HELPER"
+SUDOERS_TMP="$(/usr/bin/mktemp /tmp/l2tp-sudoers.XXXXXX)"
+/bin/echo "$USER_NAME ALL=(root) NOPASSWD: $ROOT_HELPER" > "$SUDOERS_TMP"
+sudo /usr/sbin/chown root:wheel "$SUDOERS_TMP"
+sudo /bin/chmod 0440 "$SUDOERS_TMP"
+sudo /usr/sbin/visudo -cf "$SUDOERS_TMP" >/dev/null
+sudo /bin/mv "$SUDOERS_TMP" "$SUDOERS"
+
 echo "==> Сброс кэша иконок (лечит белый квадрат в доке)"
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "/Applications/$APP"
 rm -rf "$HOME/Library/Caches/com.apple.iconservices.store" 2>/dev/null || true
