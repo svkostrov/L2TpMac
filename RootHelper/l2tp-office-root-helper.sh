@@ -6,6 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
+ROOT_HELPER_VERSION="1.28"
 
 die() {
   echo "$1"
@@ -81,7 +82,7 @@ restore_network() {
   /usr/bin/killall -HUP mDNSResponder 2>/dev/null || true
 }
 
-disconnect_tunnel() {
+stop_tunnel_processes() {
   local pids oldpid alive
   pids=$(/usr/bin/pgrep -f "$OPTS" || true)
   oldpid=$(cat "$PIDF" 2>/dev/null || true)
@@ -102,12 +103,47 @@ disconnect_tunnel() {
     for P in $pids; do kill -KILL "$P" 2>/dev/null || true; done
   fi
   rm -f "$OPTS"
+}
+
+disconnect_tunnel() {
+  stop_tunnel_processes
   sleep 1
   restore_network
 }
 
+ensure_server_route() {
+  local server="$1" info default_info gw iface i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    default_info=$(/sbin/route -n get default 2>/dev/null || true)
+    gw=$(printf '%s\n' "$default_info" | /usr/bin/awk '/gateway:/{print $2; exit}')
+    iface=$(printf '%s\n' "$default_info" | /usr/bin/awk '/interface:/{print $2; exit}')
+    if [ -n "$gw" ] && [[ "$iface" == en* ]]; then
+      /sbin/route -n add -host "$server" "$gw" >/dev/null 2>&1 || \
+      /sbin/route -n change -host "$server" "$gw" >/dev/null 2>&1 || true
+    fi
+
+    info=$(/sbin/route -n get "$server" 2>/dev/null || true)
+    if printf '%s\n' "$info" | /usr/bin/grep -q 'interface: en'; then
+      return 0
+    fi
+
+    for IF in $(/sbin/ifconfig -lu); do
+      case "$IF" in en*) ;; *) continue ;; esac
+      /sbin/ifconfig "$IF" 2>/dev/null | /usr/bin/grep -q 'inet ' || continue
+      gw=$(/usr/sbin/ipconfig getoption "$IF" router 2>/dev/null)
+      [ -n "$gw" ] || continue
+      /sbin/route -n add default "$gw" >/dev/null 2>&1 || true
+      /sbin/route -n add -host "$server" "$gw" >/dev/null 2>&1 || \
+      /sbin/route -n change -host "$server" "$gw" >/dev/null 2>&1 || true
+      break
+    done
+    sleep 1
+  done
+  return 1
+}
+
 connect_tunnel() {
-  local server username password networks route_all user_esc pass_esc base_gw pid ip peer rterr
+  local server username password networks route_all user_esc pass_esc pid ip peer rterr
   server="$(decode_key SERVER)"
   username="$(decode_key USERNAME)"
   password="$(decode_key PASSWORD)"
@@ -118,14 +154,10 @@ connect_tunnel() {
   valid_host "$server" || die "BAD-SERVER"
   [ -x "$APP_HELPER" ] || die "HELPER-MISSING: $APP_HELPER"
 
-  disconnect_tunnel >/dev/null 2>&1 || true
+  stop_tunnel_processes >/dev/null 2>&1 || true
   cleanup_ppp_state
 
-  base_gw=$(/sbin/route -n get "$server" 2>/dev/null | /usr/bin/awk '/gateway:/{print $2; exit}')
-  if [ -n "$base_gw" ]; then
-    /sbin/route -n add -host "$server" "$base_gw" >/dev/null 2>&1 || \
-    /sbin/route -n change -host "$server" "$base_gw" >/dev/null 2>&1 || true
-  fi
+  ensure_server_route "$server" || die "NO-SERVER-ROUTE"
 
   user_esc="$(printf '%s' "$username" | ppp_escape)"
   pass_esc="$(printf '%s' "$password" | ppp_escape)"
@@ -191,6 +223,7 @@ REQ="${1:-}"
 [ -f "$REQ" ] || die "REQUEST-NOT-FOUND"
 action="$(decode_key ACTION)"
 case "$action" in
+  version) echo "ROOT-HELPER-VERSION $ROOT_HELPER_VERSION" ;;
   connect) connect_tunnel ;;
   disconnect) disconnect_tunnel; echo "DONE" ;;
   *) die "BAD-ACTION" ;;

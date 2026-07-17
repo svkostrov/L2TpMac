@@ -14,6 +14,8 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
+private let requiredRootHelperVersion = "1.28"
+
 // MARK: - GitHub updater
 
 struct GitHubReleaseAsset: Decodable {
@@ -596,9 +598,17 @@ final class VPNManager: ObservableObject {
     private static func rootHelperInstalled() -> Bool {
         guard FileManager.default.fileExists(atPath: rootHelperPath) else { return false }
         let probePath = NSTemporaryDirectory() + "l2tp-helper-probe-\(UUID().uuidString).env"
+        let probe = "ACTION=\(Data("version".utf8).base64EncodedString())\n"
+        do {
+            try probe.write(toFile: probePath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: probePath)
+        } catch {
+            return false
+        }
+        defer { try? FileManager.default.removeItem(atPath: probePath) }
         let out = runRootHelper(requestPath: probePath)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return out.contains("REQUEST-NOT-FOUND")
+        return out.contains("ROOT-HELPER-VERSION \(requiredRootHelperVersion)")
     }
 
     private static func installRootHelper() -> String {

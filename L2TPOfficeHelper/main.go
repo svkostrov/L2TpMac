@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -133,10 +134,11 @@ func newL2TPClient(server string, logger *log.Logger) (*l2tpClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	conn, err := net.DialUDP("udp4", nil, addr)
 	if err != nil {
 		return nil, err
 	}
+	logger.Printf("udp connected: local=%s remote=%s", conn.LocalAddr(), addr)
 	return &l2tpClient{
 		conn:          conn,
 		remote:        addr,
@@ -229,13 +231,10 @@ func (c *l2tpClient) handshake() error {
 func (c *l2tpClient) readLoop(pppOut io.Writer, errs chan<- error) {
 	buf := make([]byte, 4096)
 	for {
-		n, addr, err := c.conn.ReadFromUDP(buf)
+		n, err := c.conn.Read(buf)
 		if err != nil {
 			errs <- err
 			return
-		}
-		if !sameUDPAddr(addr, c.remote) {
-			continue
 		}
 		pkt := append([]byte(nil), buf[:n]...)
 		if isControl(pkt) {
@@ -286,8 +285,7 @@ func (c *l2tpClient) sendControl(tid, sid uint16, avps []avp) error {
 	_ = binary.Write(&pkt, binary.BigEndian, c.nr)
 	pkt.Write(body.Bytes())
 	c.ns++
-	_, err := c.conn.WriteToUDP(pkt.Bytes(), c.remote)
-	return err
+	return c.writePacket(pkt.Bytes())
 }
 
 func (c *l2tpClient) sendAck(tid uint16) error {
@@ -298,19 +296,15 @@ func (c *l2tpClient) sendAck(tid uint16) error {
 	_ = binary.Write(&pkt, binary.BigEndian, uint16(0))
 	_ = binary.Write(&pkt, binary.BigEndian, c.ns)
 	_ = binary.Write(&pkt, binary.BigEndian, c.nr)
-	_, err := c.conn.WriteToUDP(pkt.Bytes(), c.remote)
-	return err
+	return c.writePacket(pkt.Bytes())
 }
 
 func (c *l2tpClient) readControl() (*controlPacket, error) {
 	buf := make([]byte, 2048)
 	for {
-		n, addr, err := c.conn.ReadFromUDP(buf)
+		n, err := c.conn.Read(buf)
 		if err != nil {
 			return nil, err
-		}
-		if !sameUDPAddr(addr, c.remote) {
-			continue
 		}
 		pkt := append([]byte(nil), buf[:n]...)
 		if !isControl(pkt) {
@@ -326,15 +320,48 @@ func (c *l2tpClient) sendData(payload []byte) error {
 	_ = binary.Write(&pkt, binary.BigEndian, c.peerTunnel)
 	_ = binary.Write(&pkt, binary.BigEndian, c.peerSession)
 	pkt.Write(payload)
-	_, err := c.conn.WriteToUDP(pkt.Bytes(), c.remote)
-	return err
+	return c.writePacket(pkt.Bytes())
 }
 
-func sameUDPAddr(a, b *net.UDPAddr) bool {
-	if a == nil || b == nil {
-		return false
+func (c *l2tpClient) writePacket(pkt []byte) error {
+	var lastErr error
+	for attempt := 1; attempt <= 12; attempt++ {
+		_, err := c.conn.Write(pkt)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isTransientUDPWriteError(err) {
+			return err
+		}
+		c.log.Printf("udp write failed, retrying (%d/12): %v", attempt, err)
+		time.Sleep(500 * time.Millisecond)
+		if reconnectErr := c.reconnectUDP(); reconnectErr != nil {
+			c.log.Printf("udp reconnect failed: %v", reconnectErr)
+		}
 	}
-	return a.Port == b.Port && a.IP.Equal(b.IP)
+	return lastErr
+}
+
+func (c *l2tpClient) reconnectUDP() error {
+	conn, err := net.DialUDP("udp4", nil, c.remote)
+	if err != nil {
+		return err
+	}
+	old := c.conn
+	c.conn = conn
+	if old != nil {
+		_ = old.Close()
+	}
+	c.log.Printf("udp reconnected: local=%s remote=%s", conn.LocalAddr(), c.remote)
+	return nil
+}
+
+func isTransientUDPWriteError(err error) bool {
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "can't assign requested address") ||
+		strings.Contains(s, "network is unreachable") ||
+		strings.Contains(s, "no route to host")
 }
 
 func (c *l2tpClient) parseData(pkt []byte) ([]byte, bool) {
