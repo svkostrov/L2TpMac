@@ -311,6 +311,7 @@ final class VPNManager: ObservableObject {
     static let logPath = "/tmp/l2tp-office-app.log"
     static let pidPath = "/var/run/l2tp-office-app.pid"
     static let optsPath = "/etc/ppp/l2tp-office-app.opts"   // маркер наших pppd в argv
+    static let pppMTU = 1200
     private var loaded = false
     private var timer: Timer?
     private var pwSaveWork: DispatchWorkItem?
@@ -525,8 +526,8 @@ final class VPNManager: ObservableObject {
         password "\(pppEscape(password))"
         noauth
         noccp
-        mtu 1400
-        mru 1400
+        mtu \(Self.pppMTU)
+        mru \(Self.pppMTU)
         lcp-echo-interval 30
         lcp-echo-failure 3
         debug
@@ -539,7 +540,14 @@ final class VPNManager: ObservableObject {
         if !routeAll {
             for net in parsedNetworks() where Self.isValidCIDR(net) {
                 // BR-02: фиксируем неудачные route add вместо молчаливого игнора
-                routeCmds += "/sbin/route -n add -net '\(net)' -interface ppp0 >/dev/null 2>&1 || RTERR=1\n"
+                routeCmds += """
+                if [ -n "$PEER" ]; then
+                  /sbin/route -n add -net '\(net)' "$PEER" >/dev/null 2>&1 || /sbin/route -n change -net '\(net)' "$PEER" >/dev/null 2>&1 || RTERR=1
+                else
+                  /sbin/route -n add -net '\(net)' -interface ppp0 >/dev/null 2>&1 || RTERR=1
+                fi
+
+                """
             }
         }
         return """
@@ -547,6 +555,7 @@ final class VPNManager: ObservableObject {
         # Сгенерировано L2TP Office.app
         OPTS=\(Self.optsPath)
         PIDF=\(Self.pidPath)
+        SERVER_HOST='\(server.trimmingCharacters(in: .whitespaces))'
         # BR-11: opts-файл с паролем удаляется при любом завершении скрипта
         trap 'rm -f "$OPTS"' EXIT
         # BR-06: перед kill проверяем, что PID из pidfile действительно pppd
@@ -564,6 +573,13 @@ final class VPNManager: ObservableObject {
               printf 'remove %s\\nquit\\n' "$K" | /usr/sbin/scutil
             fi
           done
+        fi
+        # Для full-tunnel важно оставить транспорт L2TP до VPN-сервера снаружи туннеля.
+        # Иначе после defaultroute часть UDP-трафика к самому серверу может уйти в ppp0.
+        BASE_GW=$(/sbin/route -n get "$SERVER_HOST" 2>/dev/null | /usr/bin/awk '/gateway:/{print $2; exit}')
+        if [ -n "$BASE_GW" ]; then
+          /sbin/route -n add -host "$SERVER_HOST" "$BASE_GW" >/dev/null 2>&1 || \
+          /sbin/route -n change -host "$SERVER_HOST" "$BASE_GW" >/dev/null 2>&1 || true
         fi
         umask 077
         cat > "$OPTS" <<'PPPEOF'
@@ -583,6 +599,7 @@ final class VPNManager: ObservableObject {
           IP=$(/sbin/ifconfig ppp0 2>/dev/null | awk '/inet /{print $2}')
           if [ -n "$IP" ]; then
             sleep 1
+            PEER=$(/sbin/ifconfig ppp0 2>/dev/null | /usr/bin/awk '/inet /{print $4; exit}')
         \(routeCmds)
             if [ -n "$RTERR" ]; then echo "CONNECTED-ROUTEWARN $IP"; else echo "CONNECTED $IP"; fi
             exit 0
