@@ -424,7 +424,7 @@ final class VPNManager: ObservableObject {
             }
             // BR-07: наш ли это туннель — ищем pppd с нашим opts-файлом в argv
             let oursAlive = !Self.run("/usr/bin/pgrep", ["-f", Self.optsPath]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            let log = Self.tail(Self.logPath, lines: 60)
+            let log = Self.readLog(Self.logPath)
             DispatchQueue.main.async {
                 self.localIP = ip
                 self.remoteIP = rip
@@ -682,7 +682,7 @@ final class VPNManager: ObservableObject {
                 self.lastError = "Очистка лога отменена."
             } else if result.contains("DONE") || result.isEmpty {
                 self.lastError = ""
-                self.logText = Self.tail(Self.logPath, lines: 60)
+                self.logText = Self.readLog(Self.logPath)
             } else {
                 self.lastError = result
             }
@@ -905,9 +905,9 @@ final class VPNManager: ObservableObject {
         return String(data: data, encoding: .utf8) ?? ""
     }
 
-    static func tail(_ path: String, lines: Int) -> String {
-        guard let s = try? String(contentsOfFile: path, encoding: .utf8) else { return "Лог пока пуст." }
-        return s.split(separator: "\n").suffix(lines).joined(separator: "\n")
+    static func readLog(_ path: String) -> String {
+        guard let s = try? String(contentsOfFile: path, encoding: .utf8) else { return "" }
+        return s
     }
 }
 
@@ -1199,6 +1199,20 @@ struct MenuContent: View {
     private var stopButtonDisabled: Bool {
         connectingInProgress ? vpn.foreignTunnel : disconnectDisabled
     }
+    private var primaryActionDisabled: Bool {
+        connectingInProgress ? stopButtonDisabled : (vpn.isConnected ? disconnectDisabled : connectDisabled)
+    }
+    private var primaryActionTitle: String {
+        if connectingInProgress { return "Остановить" }
+        return vpn.isConnected ? "Отключить" : "Подключить"
+    }
+    private var primaryActionIcon: String {
+        if connectingInProgress { return "xmark.octagon.fill" }
+        return vpn.isConnected ? "lock.open" : "lock.fill"
+    }
+    private var primaryActionIsDestructive: Bool {
+        connectingInProgress || vpn.isConnected
+    }
 
     private func showMainWindow() {
         // BR-17: openWindow из MenuBarExtra не всегда открывает закрытое окно —
@@ -1222,14 +1236,34 @@ struct MenuContent: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(vpn.isConnected ? "Подключено" : vpn.statusText)
                             .font(.headline)
-                            .lineLimit(2)
+                            .lineLimit(1)
                         if vpn.isConnected {
                             Text("\(vpn.localIP) → \(vpn.remoteIP)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                     }
+                    .layoutPriority(1)
                     Spacer()
+                    Button {
+                        if connectingInProgress {
+                            vpn.emergencyStop()
+                        } else if vpn.isConnected {
+                            vpn.disconnect()
+                        } else {
+                            vpn.connect()
+                        }
+                    } label: {
+                        Label(primaryActionTitle, systemImage: primaryActionIcon)
+                            .font(.callout.weight(.semibold))
+                            .lineLimit(1)
+                            .frame(minWidth: 118)
+                    }
+                    .controlSize(.regular)
+                    .tint(primaryActionIsDestructive ? .red : .accentColor)
+                    .disabled(primaryActionDisabled)
+                    .opacity(primaryActionDisabled ? 0.5 : 1.0)
                     if vpn.isConnected, !vpn.remotePingText.isEmpty {
                         HStack(spacing: 4) {
                             Image(systemName: "waveform.path.ecg")
@@ -1244,42 +1278,16 @@ struct MenuContent: View {
                     }
                     if vpn.busy { ProgressView().controlSize(.small) }
                 }
+
                 Button {
                     showMainWindow()
                 } label: {
-                    Label("Настройки", systemImage: "gearshape.fill")
-                        .font(.callout.weight(.semibold))
+                    Label("Настройки", systemImage: "gearshape")
+                        .font(.callout)
                         .frame(maxWidth: .infinity)
                 }
                 .controlSize(.large)
-                .buttonStyle(.borderedProminent)
-            }
-
-            HStack(spacing: 10) {
-                Button {
-                    vpn.connect()
-                } label: {
-                    Label("Подключить", systemImage: "lock.fill").frame(maxWidth: .infinity)
-                }
-                .disabled(connectDisabled)
-                .opacity(connectDisabled ? 0.5 : 1.0)
-
-                Button {
-                    if connectingInProgress {
-                        vpn.emergencyStop()
-                    } else {
-                        vpn.disconnect()
-                    }
-                } label: {
-                    Label(
-                        connectingInProgress ? "Остановить подключение" : "Отключить",
-                        systemImage: connectingInProgress ? "xmark.octagon.fill" : "lock.open"
-                    )
-                    .frame(maxWidth: .infinity)
-                }
-                .tint(.red)
-                .disabled(stopButtonDisabled)
-                .opacity(stopButtonDisabled ? 0.5 : 1.0)
+                .buttonStyle(.bordered)
             }
 
             Divider()
@@ -1335,7 +1343,7 @@ struct MenuContent: View {
             .font(.callout)
         }
         .padding(14)
-        .frame(width: 300)
+        .frame(width: 360)
     }
 }
 
