@@ -81,6 +81,7 @@ ifconfig ppp0               # статус
 
 ## История версий
 
+- **1.18** — helper принудительно использует IPv4 UDP socket (`udp4`, `0.0.0.0:0`), чтобы macOS не открывала `[::]` socket и не падала с `sendto: can't assign requested address`.
 - **1.17** — full-tunnel временно заблокирован в UI («в разработке»), сохранённые настройки принудительно переводятся в split-режим; усилено восстановление default route/DNS после отключения.
 - **1.16** — helper переведён с connected UDP на unconnected UDP socket, чтобы macOS выбирала актуальный source address и не падала с `can't assign requested address`.
 - **1.15** — full-tunnel переведён на ручную маршрутизацию: `pppd defaultroute/usepeerdns` не используются, default добавляется через `ppp0`, DNS macOS не трогается.

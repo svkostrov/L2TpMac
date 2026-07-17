@@ -129,11 +129,11 @@ func main() {
 }
 
 func newL2TPClient(server string, logger *log.Logger) (*l2tpClient, error) {
-	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(server, l2tpPort))
+	addr, err := net.ResolveUDPAddr("udp4", net.JoinHostPort(server, l2tpPort))
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.ListenUDP("udp", nil)
+	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		return nil, err
 	}
