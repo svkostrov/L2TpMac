@@ -323,12 +323,15 @@ final class VPNManager: ObservableObject {
         let d = UserDefaults.standard
         server   = d.string(forKey: "server") ?? "213.79.84.225"
         username = d.string(forKey: "username") ?? ""
-        routeAll = d.object(forKey: "routeAll") as? Bool ?? true
+        routeAll = false
         networks = d.string(forKey: "networks") ?? "172.16.0.0/12, 10.10.10.0/24"
         autoConnect = d.bool(forKey: "autoConnect")
         password = Keychain.get("vpn-password")
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         loaded = true
+        if d.object(forKey: "routeAll") as? Bool == true {
+            d.set(false, forKey: "routeAll")
+        }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.refresh()
@@ -381,7 +384,7 @@ final class VPNManager: ObservableObject {
     }
 
     var networksValid: Bool {
-        routeAll || (!parsedNetworks().isEmpty && invalidNetworks.isEmpty)
+        !routeAll && !parsedNetworks().isEmpty && invalidNetworks.isEmpty
     }
 
     var settingsValid: Bool {
@@ -434,6 +437,10 @@ final class VPNManager: ObservableObject {
 
     func connect() {
         guard !busy, settingsValid, !foreignTunnel else { return }
+        guard !routeAll else {
+            lastError = "Full-tunnel пока в разработке. Используй «Только выбранные сети»."
+            return
+        }
         pwSaveWork?.perform(); pwSaveWork?.cancel()  // пароль в Keychain до подключения
         runAdmin(script: connectScript(), action: "Подключаюсь…") { result in
             if Self.isCancelled(result) {
@@ -679,7 +686,7 @@ final class VPNManager: ObservableObject {
         # BR-18: восстановить глобальный default route — с повторами, т.к. конфигурация
         # может переигрываться configd в течение нескольких секунд после teardown
         for T in 1 2 3 4 5; do
-          /sbin/route -n get default >/dev/null 2>&1 && break
+          /sbin/route -n get default 2>/dev/null | /usr/bin/grep -q 'interface: en' && break
           for IF in $(/sbin/ifconfig -lu); do
             case "$IF" in en*) ;; *) continue ;; esac
             /sbin/ifconfig "$IF" 2>/dev/null | grep -q 'inet ' || continue
@@ -694,15 +701,20 @@ final class VPNManager: ObservableObject {
         done
         # BR-18: если глобальный DNS так и остался пустым — обновить DHCP-аренду
         # (только на интерфейсе, который реально работает по DHCP)
-        if ! echo 'show State:/Network/Global/DNS' | /usr/sbin/scutil | /usr/bin/grep -q ServerAddresses; then
-          for IF in $(/sbin/ifconfig -lu); do
-            case "$IF" in en*) ;; *) continue ;; esac
-            if /usr/sbin/ipconfig getpacket "$IF" 2>/dev/null | /usr/bin/grep -q yiaddr; then
-              /usr/sbin/ipconfig set "$IF" DHCP
-              break
-            fi
-          done
-        fi
+        for K in State:/Network/Global/DNS State:/Network/Global/IPv4; do
+          printf 'remove %s\\nquit\\n' "$K" | /usr/sbin/scutil >/dev/null 2>&1 || true
+        done
+        for IF in $(/sbin/ifconfig -lu); do
+          case "$IF" in en*) ;; *) continue ;; esac
+          if /usr/sbin/ipconfig getpacket "$IF" 2>/dev/null | /usr/bin/grep -q yiaddr; then
+            /usr/sbin/ipconfig set "$IF" DHCP >/dev/null 2>&1 || true
+          fi
+        done
+        sleep 1
+        for T in 1 2 3 4 5; do
+          echo 'show State:/Network/Global/DNS' | /usr/sbin/scutil | /usr/bin/grep -q ServerAddresses && break
+          sleep 1
+        done
         /usr/bin/dscacheutil -flushcache 2>/dev/null
         /usr/bin/killall -HUP mDNSResponder 2>/dev/null
         echo "DONE"
@@ -813,31 +825,43 @@ struct ContentView: View {
                     }
                     GridRow {
                         Text("Трафик")
-                        Picker("", selection: $vpn.routeAll) {
-                            Text("Весь трафик через VPN").tag(true)
-                            Text("Только выбранные сети").tag(false)
-                        }
-                        .pickerStyle(.radioGroup)
-                        .labelsHidden()
-                    }
-                    if !vpn.routeAll {
-                        GridRow {
-                            Text("Сети")
-                            VStack(alignment: .leading, spacing: 2) {
-                                TextField("например: 172.16.0.0/12, 10.10.10.0/24", text: $vpn.networks)
-                                    .textFieldStyle(.roundedBorder)
-                                if !vpn.invalidNetworks.isEmpty {
-                                    // BR-02: невалидные CIDR подсвечиваются, подключение блокируется
-                                    Text("Неверный CIDR: \(vpn.invalidNetworks.joined(separator: ", "))")
-                                        .font(.caption).foregroundStyle(.red)
-                                } else if vpn.parsedNetworks().isEmpty {
-                                    Text("Укажи хотя бы одну сеть")
-                                        .font(.caption).foregroundStyle(.red)
-                                } else {
-                                    // BR-13: поясняем поведение DNS в split-режиме
-                                    Text("CIDR через запятую или пробел. DNS VPN-сервера в этом режиме не используется")
-                                        .font(.caption).foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Circle()
+                                    .fill(.secondary.opacity(0.35))
+                                    .frame(width: 16, height: 16)
+                                Text("Весь трафик через VPN — в разработке")
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack(spacing: 8) {
+                                ZStack {
+                                    Circle()
+                                        .fill(.blue)
+                                        .frame(width: 16, height: 16)
+                                    Circle()
+                                        .fill(.white.opacity(0.8))
+                                        .frame(width: 5, height: 5)
                                 }
+                                Text("Только выбранные сети")
+                            }
+                        }
+                    }
+                    GridRow {
+                        Text("Сети")
+                        VStack(alignment: .leading, spacing: 2) {
+                            TextField("например: 172.16.0.0/12, 10.10.10.0/24", text: $vpn.networks)
+                                .textFieldStyle(.roundedBorder)
+                            if !vpn.invalidNetworks.isEmpty {
+                                // BR-02: невалидные CIDR подсвечиваются, подключение блокируется
+                                Text("Неверный CIDR: \(vpn.invalidNetworks.joined(separator: ", "))")
+                                    .font(.caption).foregroundStyle(.red)
+                            } else if vpn.parsedNetworks().isEmpty {
+                                Text("Укажи хотя бы одну сеть")
+                                    .font(.caption).foregroundStyle(.red)
+                            } else {
+                                // BR-13: поясняем поведение DNS в split-режиме
+                                Text("CIDR через запятую или пробел. DNS VPN-сервера в этом режиме не используется")
+                                    .font(.caption).foregroundStyle(.secondary)
                             }
                         }
                     }
