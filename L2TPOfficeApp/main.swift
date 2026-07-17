@@ -1046,17 +1046,20 @@ struct MenuContent: View {
             Button {
                 updater.checkForUpdates(silent: false)
             } label: {
-                if updater.checking || updater.installing {
-                    Label(updater.statusText.isEmpty ? "Обновление..." : updater.statusText, systemImage: "arrow.triangle.2.circlepath")
-                } else {
-                    Label("Проверить обновления", systemImage: "arrow.triangle.2.circlepath")
+                HStack(spacing: 8) {
+                    Image(systemName: updater.installing ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(appVersion)
+                            .font(.callout.weight(.medium))
+                        Text(updater.statusText.isEmpty ? "Проверить обновления" : updater.statusText)
+                            .font(.caption)
+                            .lineLimit(1)
+                    }
+                    Spacer()
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .disabled(updater.checking || updater.installing)
-            Text("Версия \(appVersion)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .center)
         }
         .padding(12)
         .frame(width: 280)
