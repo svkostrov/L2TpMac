@@ -314,6 +314,8 @@ final class VPNManager: ObservableObject {
         .deletingLastPathComponent()
         .appendingPathComponent("l2tp-office-helper")
         .path ?? "/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
+    static let rootHelperPath = "/Library/PrivilegedHelperTools/com.rokot.l2tp-office.root-helper"
+    static let sudoersPath = "/etc/sudoers.d/l2tp-office"
     static let pppMTU = 1200
     private var loaded = false
     private var timer: Timer?
@@ -445,7 +447,7 @@ final class VPNManager: ObservableObject {
             return
         }
         pwSaveWork?.perform(); pwSaveWork?.cancel()  // пароль в Keychain до подключения
-        runAdmin(script: connectScript(), action: "Подключаюсь…") { result in
+        runPrivileged(request: requestFile(action: "connect"), action: "Подключаюсь…") { result in
             if Self.isCancelled(result) {
                 self.lastError = "Подключение отменено (диалог пароля закрыт)."
             } else if result.contains("CONNECTED-ROUTEWARN") {
@@ -468,7 +470,7 @@ final class VPNManager: ObservableObject {
 
     func disconnect() {
         guard !busy, !foreignTunnel else { return }
-        runAdmin(script: disconnectScript(), action: "Отключаю…") { result in
+        runPrivileged(request: requestFile(action: "disconnect"), action: "Отключаю…") { result in
             // BR-04: отмена диалога — явное сообщение, туннель остался
             self.lastError = Self.isCancelled(result) ? "Отключение отменено (диалог пароля закрыт)." : ""
         }
@@ -494,38 +496,47 @@ final class VPNManager: ObservableObject {
         return l.contains("user canceled") || l.contains("user cancelled") || out.contains("(-128)")
     }
 
-    private func runAdmin(script: String, action: String, completion: @escaping (String) -> Void) {
+    private func runPrivileged(request: String, action: String, completion: @escaping (String) -> Void) {
         busy = true
         statusText = action
         lastError = ""   // OPT-2: старая ошибка не висит во время новой попытки
         DispatchQueue.global(qos: .userInitiated).async {
-            let tmp = NSTemporaryDirectory() + "l2tp-action-\(UUID().uuidString).sh"
-            let askpass = NSTemporaryDirectory() + "l2tp-askpass-\(UUID().uuidString).sh"
-            defer {
-                try? FileManager.default.removeItem(atPath: tmp)
-                try? FileManager.default.removeItem(atPath: askpass)
-            }
+            let requestPath = NSTemporaryDirectory() + "l2tp-request-\(UUID().uuidString).env"
+            defer { try? FileManager.default.removeItem(atPath: requestPath) }
             do {
-                try script.write(toFile: tmp, atomically: true, encoding: .utf8)
-                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tmp)
-                try "#!/bin/sh\nexit 1\n".write(toFile: askpass, atomically: true, encoding: .utf8)
-                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: askpass)
+                try request.write(toFile: requestPath, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: requestPath)
             } catch {
                 DispatchQueue.main.async {
                     self.busy = false
-                    self.lastError = "Не удалось создать временный скрипт."
+                    self.lastError = "Не удалось создать request-файл."
                     self.refresh()
                 }
                 return
             }
-            var out = ""
-            if Self.touchIDSudoConfigured() {
-                out = Self.runWithTouchIDSudo(scriptPath: tmp, askpassPath: askpass)
+            if !Self.rootHelperInstalled() {
+                let setup = Self.installRootHelper()
+                if Self.isCancelled(setup) || !Self.rootHelperInstalled() {
+                    DispatchQueue.main.async {
+                        self.busy = false
+                        self.lastError = Self.isCancelled(setup)
+                            ? "Установка helper-а отменена."
+                            : "Не удалось установить helper: \(setup)"
+                        self.refresh()
+                    }
+                    return
+                }
             }
-            if out.isEmpty || Self.isSudoAuthenticationFailure(out) {
-                out = Self.runWithPasswordDialog(scriptPath: tmp)
-            }
+            var out = Self.runRootHelper(requestPath: requestPath)
             out = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            if Self.isSudoAuthenticationFailure(out) {
+                let setup = Self.installRootHelper()
+                if !Self.isCancelled(setup) && Self.rootHelperInstalled() {
+                    out = Self.runRootHelper(requestPath: requestPath).trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    out = Self.isCancelled(setup) ? "USERCANCEL" : "Не удалось установить helper: \(setup)"
+                }
+            }
             DispatchQueue.main.async {
                 self.busy = false
                 completion(out)
@@ -534,35 +545,64 @@ final class VPNManager: ObservableObject {
         }
     }
 
-    private static func runWithTouchIDSudo(scriptPath: String, askpassPath: String) -> String {
-        let command = "/usr/bin/env SUDO_ASKPASS=\(shellQuote(askpassPath)) /usr/bin/sudo -A -p '' /bin/bash \(shellQuote(scriptPath)) 2>&1"
+    private func requestFile(action: String) -> String {
+        func b64(_ s: String) -> String {
+            Data(s.utf8).base64EncodedString()
+        }
+        let nets = parsedNetworks().filter { Self.isValidCIDR($0) }.joined(separator: " ")
+        return """
+        ACTION=\(b64(action))
+        SERVER=\(b64(server.trimmingCharacters(in: .whitespaces)))
+        USERNAME=\(b64(username))
+        PASSWORD=\(b64(password))
+        ROUTE_ALL=\(b64(routeAll ? "true" : "false"))
+        NETWORKS=\(b64(nets))
+        """
+    }
+
+    private static func runRootHelper(requestPath: String) -> String {
+        let command = "/usr/bin/sudo -n \(shellQuote(rootHelperPath)) \(shellQuote(requestPath)) 2>&1"
         let osa = "do shell script \"\(appleScriptQuoted(command))\""
         return run("/usr/bin/osascript", ["-e", osa])
     }
 
-    private static func runWithPasswordDialog(scriptPath: String) -> String {
-        let command = "/bin/bash \(shellQuote(scriptPath)) 2>&1"
+    private static func rootHelperInstalled() -> Bool {
+        FileManager.default.isExecutableFile(atPath: rootHelperPath) &&
+        (try? String(contentsOfFile: sudoersPath, encoding: .utf8).contains(rootHelperPath)) == true
+    }
+
+    private static func installRootHelper() -> String {
+        guard let bundled = Bundle.main.resourceURL?.appendingPathComponent("l2tp-office-root-helper.sh").path,
+              FileManager.default.fileExists(atPath: bundled) else {
+            return "root-helper не найден в bundle."
+        }
+        let user = NSUserName()
+        let setup = """
+        set -euo pipefail
+        /bin/mkdir -p /Library/PrivilegedHelperTools /etc/sudoers.d
+        /bin/cp \(shellQuote(bundled)) \(shellQuote(rootHelperPath))
+        /usr/sbin/chown root:wheel \(shellQuote(rootHelperPath))
+        /bin/chmod 0500 \(shellQuote(rootHelperPath))
+        SUDOERS_TMP=$(/usr/bin/mktemp /tmp/l2tp-sudoers.XXXXXX)
+        /bin/echo '\(user) ALL=(root) NOPASSWD: \(rootHelperPath)' > "$SUDOERS_TMP"
+        /usr/sbin/chown root:wheel "$SUDOERS_TMP"
+        /bin/chmod 0440 "$SUDOERS_TMP"
+        /usr/sbin/visudo -cf "$SUDOERS_TMP" >/dev/null
+        /bin/mv "$SUDOERS_TMP" \(shellQuote(sudoersPath))
+        echo ROOT-HELPER-READY
+        """
+        let command = "/bin/bash -c \(shellQuote(setup))"
         let osa = "do shell script \"\(appleScriptQuoted(command))\" with administrator privileges"
         return run("/usr/bin/osascript", ["-e", osa])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func isSudoAuthenticationFailure(_ out: String) -> Bool {
         let l = out.lowercased()
         return l.contains("sudo:")
             || l.contains("a password is required")
-            || l.contains("no password was provided")
-            || l.contains("authentication failed")
-            || l.contains("try again")
-    }
-
-    private static func touchIDSudoConfigured() -> Bool {
-        guard let s = try? String(contentsOfFile: "/etc/pam.d/sudo_local", encoding: .utf8) else { return false }
-        return s
-            .split(separator: "\n")
-            .contains { line in
-                let t = line.trimmingCharacters(in: .whitespaces)
-                return !t.hasPrefix("#") && t.contains("pam_tid.so")
-            }
+            || l.contains("not in the sudoers")
+            || l.contains("password is required")
     }
 
     private static func shellQuote(_ s: String) -> String {
@@ -809,6 +849,7 @@ func statusColor(_ vpn: VPNManager) -> Color {
 struct ContentView: View {
     @EnvironmentObject var vpn: VPNManager
     @EnvironmentObject var updater: AppUpdater
+    @State private var showVPNPassword = false
 
     private var connectDisabled: Bool {
         vpn.isConnected || vpn.busy || vpn.foreignTunnel || !vpn.settingsValid
@@ -873,8 +914,24 @@ struct ContentView: View {
                     }
                     GridRow {
                         Text("Пароль")
-                        SecureField("Хранится в Keychain", text: $vpn.password)
+                        HStack(spacing: 8) {
+                            Group {
+                                if showVPNPassword {
+                                    TextField("Хранится в Keychain", text: $vpn.password)
+                                } else {
+                                    SecureField("Хранится в Keychain", text: $vpn.password)
+                                }
+                            }
                             .textFieldStyle(.roundedBorder)
+                            Button {
+                                showVPNPassword.toggle()
+                            } label: {
+                                Image(systemName: showVPNPassword ? "eye.slash" : "eye")
+                                    .frame(width: 22)
+                            }
+                            .buttonStyle(.plain)
+                            .help(showVPNPassword ? "Скрыть пароль" : "Показать пароль")
+                        }
                     }
                     GridRow {
                         Text("Трафик")
