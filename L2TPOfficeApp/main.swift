@@ -476,19 +476,34 @@ final class VPNManager: ObservableObject {
         }
     }
 
+    func disconnectBeforeTerminate(completion: @escaping () -> Void) {
+        guard isConnected, !foreignTunnel else {
+            completion()
+            return
+        }
+        runPrivileged(request: requestFile(action: "disconnect"), action: "Отключаю перед выходом…") { _ in
+            self.lastError = ""
+            completion()
+        }
+    }
+
     // BR-14: подтверждение выхода при активном туннеле
     func quit() {
         if isConnected {
             NSApp.activate(ignoringOtherApps: true)
             let a = NSAlert()
             a.messageText = "VPN-туннель активен"
-            a.informativeText = "Выйти из приложения? Туннель останется работать в фоне, управлять им будет нельзя до следующего запуска."
+            a.informativeText = "Отключить туннель и выйти из приложения?"
             a.alertStyle = .warning
-            a.addButton(withTitle: "Выйти")
+            a.addButton(withTitle: "Отключить и выйти")
             a.addButton(withTitle: "Отмена")
             guard a.runModal() == .alertFirstButtonReturn else { return }
+            disconnectBeforeTerminate {
+                NSApp.terminate(nil)
+            }
+        } else {
+            NSApp.terminate(nil)
         }
-        NSApp.terminate(nil)
     }
 
     private static func isCancelled(_ out: String) -> Bool {
@@ -844,6 +859,24 @@ func statusColor(_ vpn: VPNManager) -> Color {
     return .red
 }
 
+// MARK: - Termination
+
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var vpn: VPNManager?
+    private var terminationInProgress = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let vpn, vpn.isConnected, !vpn.foreignTunnel, !terminationInProgress else {
+            return .terminateNow
+        }
+        terminationInProgress = true
+        vpn.disconnectBeforeTerminate {
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+}
+
 // MARK: - Main window
 
 struct ContentView: View {
@@ -1130,6 +1163,7 @@ struct MenuIcon: View {
 
 @main
 struct L2TPOfficeApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var vpn = VPNManager()
     @StateObject private var updater = AppUpdater()
 
@@ -1138,6 +1172,9 @@ struct L2TPOfficeApp: App {
             ContentView()
                 .environmentObject(vpn)
                 .environmentObject(updater)
+                .onAppear {
+                    appDelegate.vpn = vpn
+                }
         }
         // BR-03: окно нельзя сделать меньше минимального контента, больше — можно
         .windowResizability(.contentMinSize)
