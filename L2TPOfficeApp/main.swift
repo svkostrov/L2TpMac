@@ -515,29 +515,41 @@ final class VPNManager: ObservableObject {
                 }
                 return
             }
-            if !Self.touchIDSudoConfigured() {
-                let setup = Self.installTouchIDSudo()
-                if Self.isCancelled(setup) || !Self.touchIDSudoConfigured() {
-                    DispatchQueue.main.async {
-                        self.busy = false
-                        self.lastError = Self.isCancelled(setup)
-                            ? "Настройка Touch ID отменена."
-                            : "Не удалось включить Touch ID для sudo: \(setup)"
-                        self.refresh()
-                    }
-                    return
-                }
+            var out = ""
+            if Self.touchIDSudoConfigured() {
+                out = Self.runWithTouchIDSudo(scriptPath: tmp, askpassPath: askpass)
             }
-            let command = "/usr/bin/env SUDO_ASKPASS=\(Self.shellQuote(askpass)) /usr/bin/sudo -A -p '' /bin/bash \(Self.shellQuote(tmp)) 2>&1"
-            let osa = "do shell script \"\(Self.appleScriptQuoted(command))\""
-            let out = Self.run("/usr/bin/osascript", ["-e", osa])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if out.isEmpty || Self.isSudoAuthenticationFailure(out) {
+                out = Self.runWithPasswordDialog(scriptPath: tmp)
+            }
+            out = out.trimmingCharacters(in: .whitespacesAndNewlines)
             DispatchQueue.main.async {
                 self.busy = false
                 completion(out)
                 self.refresh()
             }
         }
+    }
+
+    private static func runWithTouchIDSudo(scriptPath: String, askpassPath: String) -> String {
+        let command = "/usr/bin/env SUDO_ASKPASS=\(shellQuote(askpassPath)) /usr/bin/sudo -A -p '' /bin/bash \(shellQuote(scriptPath)) 2>&1"
+        let osa = "do shell script \"\(appleScriptQuoted(command))\""
+        return run("/usr/bin/osascript", ["-e", osa])
+    }
+
+    private static func runWithPasswordDialog(scriptPath: String) -> String {
+        let command = "/bin/bash \(shellQuote(scriptPath)) 2>&1"
+        let osa = "do shell script \"\(appleScriptQuoted(command))\" with administrator privileges"
+        return run("/usr/bin/osascript", ["-e", osa])
+    }
+
+    private static func isSudoAuthenticationFailure(_ out: String) -> Bool {
+        let l = out.lowercased()
+        return l.contains("sudo:")
+            || l.contains("a password is required")
+            || l.contains("no password was provided")
+            || l.contains("authentication failed")
+            || l.contains("try again")
     }
 
     private static func touchIDSudoConfigured() -> Bool {
@@ -548,46 +560,6 @@ final class VPNManager: ObservableObject {
                 let t = line.trimmingCharacters(in: .whitespaces)
                 return !t.hasPrefix("#") && t.contains("pam_tid.so")
             }
-    }
-
-    private static func installTouchIDSudo() -> String {
-        let setupPath = NSTemporaryDirectory() + "l2tp-touchid-setup-\(UUID().uuidString).sh"
-        defer { try? FileManager.default.removeItem(atPath: setupPath) }
-        let script = """
-        #!/bin/bash
-        set -euo pipefail
-        TARGET=/etc/pam.d/sudo_local
-        WORK=$(/usr/bin/mktemp /tmp/l2tp-sudo-local.XXXXXX)
-        trap 'rm -f "$WORK" "$WORK.new"' EXIT
-        if [ -f "$TARGET" ]; then
-          /bin/cp "$TARGET" "$WORK"
-        elif [ -f /etc/pam.d/sudo_local.template ]; then
-          /bin/cp /etc/pam.d/sudo_local.template "$WORK"
-        else
-          : > "$WORK"
-        fi
-        if ! /usr/bin/grep -v '^[[:space:]]*#' "$WORK" | /usr/bin/grep -q 'pam_tid\\.so'; then
-          {
-            echo 'auth       sufficient     pam_tid.so'
-            /bin/cat "$WORK"
-          } > "$WORK.new"
-          /bin/mv "$WORK.new" "$WORK"
-        fi
-        /usr/sbin/chown root:wheel "$WORK"
-        /bin/chmod 0444 "$WORK"
-        /bin/mv "$WORK" "$TARGET"
-        echo TOUCHID-SUDO-READY
-        """
-        do {
-            try script.write(toFile: setupPath, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: setupPath)
-        } catch {
-            return "Не удалось создать setup-скрипт Touch ID."
-        }
-        let command = "/bin/bash \(shellQuote(setupPath))"
-        let osa = "do shell script \"\(appleScriptQuoted(command))\" with administrator privileges"
-        return run("/usr/bin/osascript", ["-e", osa])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func shellQuote(_ s: String) -> String {
