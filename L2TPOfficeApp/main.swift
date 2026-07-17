@@ -4,6 +4,7 @@ import Combine
 import Security
 import ServiceManagement
 import Foundation
+import SystemConfiguration
 
 private let appVersion: String = {
     let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
@@ -13,6 +14,93 @@ private let appVersion: String = {
 private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
+
+private let systemVPNServiceName = "L2TP Office System"
+
+// MARK: - Root helper mode
+
+enum SystemVPNServiceHelper {
+    static func runIfRequested() {
+        let args = CommandLine.arguments
+        guard args.count >= 6, args[1] == "--setup-system-service" else { return }
+        do {
+            try setup(serviceName: args[2], server: args[3], username: args[4], routeAll: args[5] == "1")
+            print("SYSTEM-SERVICE-READY")
+            exit(0)
+        } catch {
+            fputs("SYSTEM-SERVICE-ERROR: \(error.localizedDescription)\n", stderr)
+            exit(1)
+        }
+    }
+
+    private static func setup(serviceName: String, server: String, username: String, routeAll: Bool) throws {
+        guard let prefs = SCPreferencesCreate(nil, "L2TP Office" as CFString, nil) else {
+            throw NSError(domain: "SystemVPN", code: 1, userInfo: [NSLocalizedDescriptionKey: scError("SCPreferencesCreate")])
+        }
+
+        // Пересоздаём только наш сервис: схема SystemConfiguration чувствительна к старым ключам.
+        if let all = SCNetworkServiceCopyAll(prefs) as? [SCNetworkService] {
+            for service in all {
+                if let name = SCNetworkServiceGetName(service), (name as String) == serviceName {
+                    SCNetworkServiceRemove(service)
+                }
+            }
+        }
+
+        guard let l2tp = SCNetworkInterfaceCreateWithInterface(kSCNetworkInterfaceIPv4, kSCNetworkInterfaceTypeL2TP),
+              let ppp = SCNetworkInterfaceCreateWithInterface(l2tp, kSCNetworkInterfaceTypePPP),
+              let service = SCNetworkServiceCreate(prefs, ppp) else {
+            throw NSError(domain: "SystemVPN", code: 2, userInfo: [NSLocalizedDescriptionKey: scError("Не удалось создать L2TP/PPP service")])
+        }
+
+        guard SCNetworkServiceSetName(service, serviceName as CFString),
+              SCNetworkServiceEstablishDefaultConfiguration(service) else {
+            throw NSError(domain: "SystemVPN", code: 3, userInfo: [NSLocalizedDescriptionKey: scError("Не удалось применить default configuration")])
+        }
+
+        let pppConfig: [String: Any] = [
+            kSCPropNetPPPCommRemoteAddress as String: server,
+            kSCPropNetPPPAuthName as String: username,
+            kSCPropNetPPPAuthPrompt as String: kSCValNetPPPAuthPromptBefore as String,
+            kSCPropNetPPPAuthProtocol as String: [
+                kSCValNetPPPAuthProtocolPAP as String,
+                kSCValNetPPPAuthProtocolCHAP as String,
+                kSCValNetPPPAuthProtocolMSCHAP2 as String
+            ],
+            kSCPropNetPPPVerboseLogging as String: 1,
+            kSCPropNetPPPOverridePrimary as String: routeAll ? 1 : 0,
+            kSCPropNetPPPIPCPCompressionVJ as String: 0,
+            kSCPropNetPPPLCPCompressionPField as String: 0,
+            kSCPropNetPPPLCPCompressionACField as String: 0,
+            kSCPropNetPPPLCPMTU as String: VPNManager.pppMTU,
+            kSCPropNetPPPLCPMRU as String: VPNManager.pppMTU,
+            kSCPropNetPPPLCPEchoEnabled as String: 1,
+            kSCPropNetPPPLCPEchoInterval as String: 30,
+            kSCPropNetPPPLCPEchoFailure as String: 3
+        ]
+        guard SCNetworkInterfaceSetConfiguration(ppp, pppConfig as CFDictionary) else {
+            throw NSError(domain: "SystemVPN", code: 4, userInfo: [NSLocalizedDescriptionKey: scError("Не удалось записать PPP config")])
+        }
+
+        let l2tpConfig: [String: Any] = [
+            kSCPropNetL2TPTransport as String: kSCValNetL2TPTransportIP as String
+        ]
+        guard SCNetworkInterfaceSetExtendedConfiguration(ppp, kSCEntNetL2TP, l2tpConfig as CFDictionary) else {
+            throw NSError(domain: "SystemVPN", code: 5, userInfo: [NSLocalizedDescriptionKey: scError("Не удалось записать L2TP Transport=IP")])
+        }
+
+        guard let set = SCNetworkSetCopyCurrent(prefs),
+              SCNetworkSetAddService(set, service),
+              SCPreferencesCommitChanges(prefs),
+              SCPreferencesApplyChanges(prefs) else {
+            throw NSError(domain: "SystemVPN", code: 6, userInfo: [NSLocalizedDescriptionKey: scError("Не удалось сохранить SystemConfiguration service")])
+        }
+    }
+
+    private static func scError(_ prefix: String) -> String {
+        "\(prefix): \(String(cString: SCErrorString(SCError())))"
+    }
+}
 
 // MARK: - GitHub updater
 
@@ -407,8 +495,10 @@ final class VPNManager: ObservableObject {
                     if p.count >= 4 { ip = p[1]; rip = p[3] }
                 }
             }
-            // BR-07: наш ли это туннель — ищем pppd с нашим opts-файлом в argv
-            let oursAlive = !Self.run("/usr/bin/pgrep", ["-f", Self.optsPath]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            // BR-07: наш ли это туннель — direct-pppd из старых версий или системный PPPController service.
+            let directAlive = !Self.run("/usr/bin/pgrep", ["-f", Self.optsPath]).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let systemStatus = Self.run("/usr/sbin/scutil", ["--nc", "status", systemVPNServiceName])
+            let oursAlive = directAlive || systemStatus.contains("Connected")
             let log = Self.tail(Self.logPath, lines: 60)
             DispatchQueue.main.async {
                 self.localIP = ip
@@ -509,38 +599,11 @@ final class VPNManager: ObservableObject {
         }
     }
 
-    private func pppEscape(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
-         .replacingOccurrences(of: "\"", with: "\\\"")
-         .replacingOccurrences(of: "\n", with: "")
+    private func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private func connectScript() -> String {
-        var opts = """
-        plugin L2TP.ppp
-        l2tpnoipsec
-        nodetach
-        remoteaddress \(server.trimmingCharacters(in: .whitespaces))
-        user "\(pppEscape(username))"
-        password "\(pppEscape(password))"
-        noauth
-        noccp
-        novj
-        novjccomp
-        nopcomp
-        noaccomp
-        receive-all
-        default-asyncmap
-        mtu \(Self.pppMTU)
-        mru \(Self.pppMTU)
-        lcp-echo-interval 30
-        lcp-echo-failure 3
-        debug
-        logfile \(Self.logPath)
-        """
-        if routeAll {
-            opts += "\ndefaultroute\nusepeerdns"
-        }
         var routeCmds = ""
         if !routeAll {
             for net in parsedNetworks() where Self.isValidCIDR(net) {
@@ -558,18 +621,35 @@ final class VPNManager: ObservableObject {
         return """
         #!/bin/bash
         # Сгенерировано L2TP Office.app
+        SERVICE=\(shellQuote(systemVPNServiceName))
+        APP_BIN=\(shellQuote(Bundle.main.executablePath ?? "/Applications/L2TP Office.app/Contents/MacOS/L2TPOffice"))
         OPTS=\(Self.optsPath)
         PIDF=\(Self.pidPath)
-        SERVER_HOST='\(server.trimmingCharacters(in: .whitespaces))'
-        # BR-11: opts-файл с паролем удаляется при любом завершении скрипта
-        trap 'rm -f "$OPTS"' EXIT
-        # BR-06: перед kill проверяем, что PID из pidfile действительно pppd
+        SERVER_HOST=\(shellQuote(server.trimmingCharacters(in: .whitespaces)))
+        VPN_USER=\(shellQuote(username))
+        VPN_PASS=\(shellQuote(password))
+        ROUTE_ALL=\(routeAll ? "1" : "0")
+
+        # v1.9: основной путь — системный PPPController/scutil service.
+        # Direct pppd + L2TP.ppp на macOS 26 показывает ICMP, но TCP SYN-ACK не доходит до TCP-input.
+        # SystemConfiguration service создаёт нормальный VPN-контекст для configd/NECP.
+        "$APP_BIN" --setup-system-service "$SERVICE" "$SERVER_HOST" "$VPN_USER" "$ROUTE_ALL" || {
+          echo "SYSTEM-SERVICE-FAILED"
+          exit 0
+        }
+
+        # BR-06: перед запуском нового сервиса убираем direct-pppd из старых версий.
         OLDPID=$(cat "$PIDF" 2>/dev/null)
         if [ -n "$OLDPID" ]; then
           case "$(ps -p "$OLDPID" -o comm= 2>/dev/null)" in
-            *pppd) kill "$OLDPID" 2>/dev/null; sleep 1 ;;
+            *pppd) kill "$OLDPID" 2>/dev/null; sleep 2; kill -KILL "$OLDPID" 2>/dev/null ;;
           esac
         fi
+        /usr/bin/pgrep -f "$OPTS" | while read P; do kill "$P" 2>/dev/null || true; done
+
+        /usr/sbin/scutil --nc stop "$SERVICE" >/dev/null 2>&1 || true
+        sleep 1
+
         # BR-18: перед новым подключением чистим стейл-стор от прошлых сессий,
         # иначе configd может держать мёртвый PPP-сервис как Primary
         if ! /sbin/ifconfig ppp0 >/dev/null 2>&1; then
@@ -586,23 +666,19 @@ final class VPNManager: ObservableObject {
           /sbin/route -n add -host "$SERVER_HOST" "$BASE_GW" >/dev/null 2>&1 || \
           /sbin/route -n change -host "$SERVER_HOST" "$BASE_GW" >/dev/null 2>&1 || true
         fi
-        umask 077
-        cat > "$OPTS" <<'PPPEOF'
-        \(opts)
-        PPPEOF
+
         : > \(Self.logPath); chmod 644 \(Self.logPath)
-        /usr/sbin/pppd file "$OPTS" >/dev/null 2>&1 &
-        PID=$!
-        echo "$PID" > "$PIDF"
+        /usr/sbin/scutil --nc start "$SERVICE" --user "$VPN_USER" --password "$VPN_PASS" >> \(Self.logPath) 2>&1 || true
         RTERR=
         for i in $(seq 1 25); do
           sleep 1
-          if ! kill -0 "$PID" 2>/dev/null; then
-            if grep -qi 'auth.*fail\\|CHAP.*fail' \(Self.logPath); then echo "AUTHFAIL"; else echo "FAILED"; fi
+          STATUS=$(/usr/sbin/scutil --nc status "$SERVICE" 2>/dev/null)
+          if echo "$STATUS" | /usr/bin/grep -qi 'authentication.*fail\\|auth.*fail\\|CHAP.*fail'; then
+            echo "AUTHFAIL"
             exit 0
           fi
           IP=$(/sbin/ifconfig ppp0 2>/dev/null | awk '/inet /{print $2}')
-          if [ -n "$IP" ]; then
+          if [ -n "$IP" ] && echo "$STATUS" | /usr/bin/grep -q 'Connected'; then
             sleep 1
             PEER=$(/sbin/ifconfig ppp0 2>/dev/null | /usr/bin/awk '/inet /{print $4; exit}')
         \(routeCmds)
@@ -610,7 +686,6 @@ final class VPNManager: ObservableObject {
             exit 0
           fi
         done
-        kill "$PID" 2>/dev/null
         echo "TIMEOUT"
         """
     }
@@ -618,7 +693,9 @@ final class VPNManager: ObservableObject {
     private func disconnectScript() -> String {
         return """
         #!/bin/bash
+        SERVICE=\(shellQuote(systemVPNServiceName))
         PIDF=\(Self.pidPath)
+        /usr/sbin/scutil --nc stop "$SERVICE" >/dev/null 2>&1 || true
         # BR-05/BR-06: убиваем ТОЛЬКО свои pppd — по маркеру opts-файла в argv
         # и по pidfile с проверкой имени процесса. Чужие pppd не трогаем.
         PIDS=$(/usr/bin/pgrep -f '\(Self.optsPath)')
@@ -629,16 +706,17 @@ final class VPNManager: ObservableObject {
           esac
         fi
         rm -f "$PIDF"
-        if [ -z "$(echo $PIDS | tr -d ' ')" ]; then echo "DONE (нечего отключать)"; exit 0; fi
-        for P in $PIDS; do kill -TERM "$P" 2>/dev/null; done
-        # даём pppd корректно снять маршруты и DNS
-        for i in 1 2 3 4 5; do
-          ALIVE=
-          for P in $PIDS; do kill -0 "$P" 2>/dev/null && ALIVE=1; done
-          [ -z "$ALIVE" ] && break
-          sleep 1
-        done
-        for P in $PIDS; do kill -KILL "$P" 2>/dev/null; done
+        if [ -n "$(echo $PIDS | tr -d ' ')" ]; then
+          for P in $PIDS; do kill -TERM "$P" 2>/dev/null; done
+          # даём pppd корректно снять маршруты и DNS
+          for i in 1 2 3 4 5; do
+            ALIVE=
+            for P in $PIDS; do kill -0 "$P" 2>/dev/null && ALIVE=1; done
+            [ -z "$ALIVE" ] && break
+            sleep 1
+          done
+          for P in $PIDS; do kill -KILL "$P" 2>/dev/null; done
+        fi
         sleep 1
         # BR-18: pppd может умереть, не откатив сетевой стор (committed PPP store).
         # Тогда PrimaryService остаётся мёртвым PPP-сервисом: default route деградирует
@@ -974,6 +1052,10 @@ struct MenuIcon: View {
 struct L2TPOfficeApp: App {
     @StateObject private var vpn = VPNManager()
     @StateObject private var updater = AppUpdater()
+
+    init() {
+        SystemVPNServiceHelper.runIfRequested()
+    }
 
     var body: some Scene {
         WindowGroup("L2TP Office", id: "main") {
