@@ -3,12 +3,234 @@ import AppKit
 import Combine
 import Security
 import ServiceManagement
+import Foundation
 
 private let appVersion: String = {
     let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
     let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
     return "v\(short) (\(build))"
 }()
+
+private let appShortVersion: String = {
+    Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+}()
+
+// MARK: - GitHub updater
+
+struct GitHubReleaseAsset: Decodable {
+    let name: String
+    let browserDownloadURL: URL
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case browserDownloadURL = "browser_download_url"
+    }
+}
+
+struct GitHubRelease: Decodable {
+    let tagName: String
+    let htmlURL: URL
+    let assets: [GitHubReleaseAsset]
+
+    var version: String {
+        tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName
+    }
+
+    var appZip: GitHubReleaseAsset? {
+        assets.first { $0.name.hasPrefix("L2TP-Office-") && $0.name.hasSuffix(".zip") }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case htmlURL = "html_url"
+        case assets
+    }
+}
+
+@MainActor
+final class AppUpdater: ObservableObject {
+    @Published var checking = false
+    @Published var installing = false
+    @Published var statusText = ""
+
+    private static let latestReleaseURL = URL(string: "https://api.github.com/repos/svkostrov/L2TpMac/releases/latest")!
+
+    init() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            self?.checkForUpdates(silent: true)
+        }
+    }
+
+    func checkForUpdates(silent: Bool) {
+        guard !checking, !installing else { return }
+        checking = true
+        statusText = "Проверяю обновления..."
+
+        var request = URLRequest(url: Self.latestReleaseURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("L2TP-Office/\(appShortVersion)", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { data, _, error in
+            Task { @MainActor in
+                self.checking = false
+                if let error {
+                    self.statusText = "Не удалось проверить обновления: \(error.localizedDescription)"
+                    if !silent { self.showMessage(self.statusText) }
+                    return
+                }
+                guard let data,
+                      let release = try? JSONDecoder().decode(GitHubRelease.self, from: data),
+                      release.appZip != nil else {
+                    self.statusText = "Не удалось прочитать latest release."
+                    if !silent { self.showMessage(self.statusText) }
+                    return
+                }
+                guard Self.compareVersions(release.version, appShortVersion) == .orderedDescending else {
+                    self.statusText = "Установлена актуальная версия \(appVersion)."
+                    if !silent { self.showMessage(self.statusText) }
+                    return
+                }
+                self.statusText = "Доступна версия v\(release.version)."
+                self.askToInstall(release)
+            }
+        }.resume()
+    }
+
+    private func askToInstall(_ release: GitHubRelease) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Доступно обновление L2TP Office"
+        alert.informativeText = "Установлена \(appVersion), доступна v\(release.version). Скачать и установить обновление из GitHub Releases?"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Обновить")
+        alert.addButton(withTitle: "Позже")
+        alert.addButton(withTitle: "Открыть релиз")
+        let answer = alert.runModal()
+        if answer == .alertFirstButtonReturn {
+            install(release)
+        } else if answer == .alertThirdButtonReturn {
+            NSWorkspace.shared.open(release.htmlURL)
+        }
+    }
+
+    private func install(_ release: GitHubRelease) {
+        guard let asset = release.appZip else { return }
+        installing = true
+        statusText = "Скачиваю v\(release.version)..."
+
+        URLSession.shared.downloadTask(with: asset.browserDownloadURL) { location, _, error in
+            if let error {
+                Task { @MainActor in
+                    self.installing = false
+                    self.statusText = "Ошибка скачивания: \(error.localizedDescription)"
+                    self.showMessage(self.statusText)
+                }
+                return
+            }
+            guard let location else {
+                Task { @MainActor in
+                    self.installing = false
+                    self.statusText = "GitHub не вернул файл обновления."
+                    self.showMessage(self.statusText)
+                }
+                return
+            }
+
+            do {
+                let fm = FileManager.default
+                let workDir = fm.temporaryDirectory.appendingPathComponent("l2tp-office-update-\(UUID().uuidString)", isDirectory: true)
+                try fm.createDirectory(at: workDir, withIntermediateDirectories: true)
+                let zipURL = workDir.appendingPathComponent(asset.name)
+                try fm.moveItem(at: location, to: zipURL)
+
+                let unzip = Process()
+                unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+                unzip.arguments = ["-x", "-k", zipURL.path, workDir.path]
+                try unzip.run()
+                unzip.waitUntilExit()
+                guard unzip.terminationStatus == 0 else { throw NSError(domain: "Updater", code: 1) }
+
+                let newApp = workDir.appendingPathComponent("L2TP Office.app", isDirectory: true)
+                guard fm.fileExists(atPath: newApp.path) else { throw NSError(domain: "Updater", code: 2) }
+                let scriptURL = workDir.appendingPathComponent("install-update.sh")
+                let script = Self.installScript(newAppPath: newApp.path)
+                try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+                try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
+
+                Task { @MainActor in
+                    self.statusText = "Устанавливаю v\(release.version)..."
+                    self.runInstaller(scriptPath: scriptURL.path)
+                }
+            } catch {
+                Task { @MainActor in
+                    self.installing = false
+                    self.statusText = "Ошибка подготовки обновления."
+                    self.showMessage(self.statusText)
+                }
+            }
+        }.resume()
+    }
+
+    private func runInstaller(scriptPath: String) {
+        let osa = "do shell script \"\(Self.appleScriptQuoted("/bin/bash \(Self.shellQuote(scriptPath))"))\" with administrator privileges"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", osa]
+        do {
+            try process.run()
+            NSApp.terminate(nil)
+        } catch {
+            installing = false
+            statusText = "Не удалось запустить установщик."
+            showMessage(statusText)
+        }
+    }
+
+    nonisolated private static func installScript(newAppPath: String) -> String {
+        """
+        #!/bin/bash
+        set -euo pipefail
+        NEW_APP=\(shellQuote(newAppPath))
+        TARGET="/Applications/L2TP Office.app"
+        /usr/bin/osascript -e 'tell application id "com.rokot.l2tp-office" to quit' >/dev/null 2>&1 || true
+        sleep 2
+        /bin/rm -rf "$TARGET"
+        /usr/bin/ditto "$NEW_APP" "$TARGET"
+        /usr/bin/xattr -dr com.apple.quarantine "$TARGET" >/dev/null 2>&1 || true
+        /usr/bin/touch "$TARGET"
+        /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$TARGET" >/dev/null 2>&1 || true
+        /usr/bin/open "$TARGET"
+        """
+    }
+
+    nonisolated private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    nonisolated private static func appleScriptQuoted(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    nonisolated private static func compareVersions(_ lhs: String, _ rhs: String) -> ComparisonResult {
+        let l = lhs.split(separator: ".").map { Int($0) ?? 0 }
+        let r = rhs.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(l.count, r.count) {
+            let lv = i < l.count ? l[i] : 0
+            let rv = i < r.count ? r[i] : 0
+            if lv < rv { return .orderedAscending }
+            if lv > rv { return .orderedDescending }
+        }
+        return .orderedSame
+    }
+
+    private func showMessage(_ message: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+}
 
 // MARK: - Keychain
 
@@ -475,6 +697,7 @@ func statusColor(_ vpn: VPNManager) -> Color {
 
 struct ContentView: View {
     @EnvironmentObject var vpn: VPNManager
+    @EnvironmentObject var updater: AppUpdater
 
     private var connectDisabled: Bool {
         vpn.isConnected || vpn.busy || vpn.foreignTunnel || !vpn.settingsValid
@@ -505,6 +728,11 @@ struct ContentView: View {
             if !vpn.lastError.isEmpty {
                 Label(vpn.lastError, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
+                    .font(.callout)
+            }
+            if !updater.statusText.isEmpty {
+                Label(updater.statusText, systemImage: updater.installing ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
+                    .foregroundStyle(updater.installing ? .blue : .secondary)
                     .font(.callout)
             }
             if vpn.foreignTunnel {
@@ -632,6 +860,7 @@ struct ContentView: View {
 
 struct MenuContent: View {
     @EnvironmentObject var vpn: VPNManager
+    @EnvironmentObject var updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
 
     private var connectDisabled: Bool {
@@ -689,6 +918,16 @@ struct MenuContent: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .font(.callout)
+            Button {
+                updater.checkForUpdates(silent: false)
+            } label: {
+                if updater.checking || updater.installing {
+                    Label(updater.statusText.isEmpty ? "Обновление..." : updater.statusText, systemImage: "arrow.triangle.2.circlepath")
+                } else {
+                    Label("Проверить обновления", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            .disabled(updater.checking || updater.installing)
             Text("Версия \(appVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -712,16 +951,21 @@ struct MenuIcon: View {
 @main
 struct L2TPOfficeApp: App {
     @StateObject private var vpn = VPNManager()
+    @StateObject private var updater = AppUpdater()
 
     var body: some Scene {
         WindowGroup("L2TP Office", id: "main") {
-            ContentView().environmentObject(vpn)
+            ContentView()
+                .environmentObject(vpn)
+                .environmentObject(updater)
         }
         // BR-03: окно нельзя сделать меньше минимального контента, больше — можно
         .windowResizability(.contentMinSize)
 
         MenuBarExtra {
-            MenuContent().environmentObject(vpn)
+            MenuContent()
+                .environmentObject(vpn)
+                .environmentObject(updater)
         } label: {
             MenuIcon(vpn: vpn)
         }
