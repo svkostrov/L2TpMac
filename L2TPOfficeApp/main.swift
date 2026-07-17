@@ -324,7 +324,10 @@ final class VPNManager: ObservableObject {
         server   = d.string(forKey: "server") ?? "213.79.84.225"
         username = d.string(forKey: "username") ?? ""
         routeAll = false
-        networks = d.string(forKey: "networks") ?? "172.16.0.0/12, 10.10.10.0/24"
+        let savedNetworks = d.string(forKey: "networks")
+        networks = (savedNetworks == nil || savedNetworks == "172.16.0.0/12, 10.10.10.0/24")
+            ? "172.16.99.0/24"
+            : savedNetworks!
         autoConnect = d.bool(forKey: "autoConnect")
         password = Keychain.get("vpn-password")
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
@@ -899,7 +902,7 @@ struct ContentView: View {
                     GridRow {
                         Text("Сети")
                         VStack(alignment: .leading, spacing: 2) {
-                            TextField("например: 172.16.0.0/12, 10.10.10.0/24", text: $vpn.networks)
+                            TextField("например: 172.16.99.0/24", text: $vpn.networks)
                                 .textFieldStyle(.roundedBorder)
                             if !vpn.invalidNetworks.isEmpty {
                                 // BR-02: невалидные CIDR подсвечиваются, подключение блокируется
