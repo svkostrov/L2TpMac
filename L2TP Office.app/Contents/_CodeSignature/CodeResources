@@ -10,7 +10,7 @@
 		</data>
 		<key>Resources/l2tp-office-root-helper.sh</key>
 		<data>
-		tXZUQYcyIPCCWriPGepYJePBEx0=
+		xvpxNRTuzeWnznqJtKEVson70sI=
 		</data>
 	</dict>
 	<key>files2</key>
@@ -19,10 +19,10 @@
 		<dict>
 			<key>cdhash</key>
 			<data>
-			hqjudiZzLR3yWUUigxhQ0YEq7rs=
+			X9wOR1oBH461rOygSJaFYtC5lMc=
 			</data>
 			<key>requirement</key>
-			<string>cdhash H"86a8ee7626732d1df2594522831850d1812aeebb"</string>
+			<string>cdhash H"5fdc0e475a011f8eb5aceca048968562d0b994c7"</string>
 		</dict>
 		<key>Resources/AppIcon.icns</key>
 		<dict>
@@ -35,7 +35,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			h7X2Pu4pN7xEB9vqMonVxwWEne7VBE7BvH8pXBdCfgg=
+			xmR7+0BND7R61Q3CpoZGYfFOVOu2aDVhM0lgnStEdts=
 			</data>
 		</dict>
 	</dict>

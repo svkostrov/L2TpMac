@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.48"
+ROOT_HELPER_VERSION="1.49"
 
 die() {
   echo "$1"
@@ -272,7 +272,8 @@ lcp-echo-failure 3
 debug
 logfile $LOG
 PPPEOF
-  : > "$LOG"; chmod 644 "$LOG"
+  touch "$LOG" 2>/dev/null || true
+  chmod 644 "$LOG" 2>/dev/null || true
   /usr/sbin/pppd file "$OPTS" >>"$LOG" 2>&1 &
   pid=$!
   echo "$pid" > "$PIDF"
