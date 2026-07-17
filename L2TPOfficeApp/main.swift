@@ -64,7 +64,7 @@ final class AppUpdater: ObservableObject {
     func checkForUpdates(silent: Bool) {
         guard !checking, !installing else { return }
         checking = true
-        statusText = "Проверяю обновления..."
+        statusText = "Проверяю…"
 
         var request = URLRequest(url: Self.latestReleaseURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -86,11 +86,11 @@ final class AppUpdater: ObservableObject {
                     return
                 }
                 guard Self.compareVersions(release.version, appShortVersion) == .orderedDescending else {
-                    self.statusText = "Установлена актуальная версия \(appVersion)."
+                    self.statusText = "Актуальная версия"
                     if !silent { self.showMessage(self.statusText) }
                     return
                 }
-                self.statusText = "Доступна версия v\(release.version)."
+                self.statusText = "Доступно v\(release.version)"
                 self.askToInstall(release)
             }
         }.resume()
@@ -248,7 +248,6 @@ final class VPNManager: ObservableObject {
     @Published var server = "" { didSet { persist() } }
     @Published var username = "" { didSet { persist() } }
     @Published var password = "" { didSet { persist() } }
-    @Published var routeAll = true { didSet { persist() } }
     @Published var networks = "" { didSet { persist() } }
     @Published var autoConnect = false { didSet { persist() } }
     @Published var launchAtLogin = false {
@@ -280,7 +279,6 @@ final class VPNManager: ObservableObject {
         let d = UserDefaults.standard
         server   = d.string(forKey: "server") ?? "213.79.84.225"
         username = d.string(forKey: "username") ?? ""
-        routeAll = false
         let savedNetworks = d.string(forKey: "networks")
         networks = (savedNetworks == nil || savedNetworks == "172.16.0.0/12, 10.10.10.0/24")
             ? "172.16.99.0/24"
@@ -289,9 +287,7 @@ final class VPNManager: ObservableObject {
         password = Self.decodeStoredPassword(d.string(forKey: "vpnPasswordLocal") ?? "")
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         loaded = true
-        if d.object(forKey: "routeAll") as? Bool == true {
-            d.set(false, forKey: "routeAll")
-        }
+        d.removeObject(forKey: "routeAll")
         clearLogOnLaunch()
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
@@ -312,7 +308,6 @@ final class VPNManager: ObservableObject {
         let d = UserDefaults.standard
         d.set(server, forKey: "server")
         d.set(username, forKey: "username")
-        d.set(routeAll, forKey: "routeAll")
         d.set(networks, forKey: "networks")
         d.set(autoConnect, forKey: "autoConnect")
         d.set(Self.encodeStoredPassword(password), forKey: "vpnPasswordLocal")
@@ -356,7 +351,7 @@ final class VPNManager: ObservableObject {
     }
 
     var networksValid: Bool {
-        !routeAll && !parsedNetworks().isEmpty && invalidNetworks.isEmpty
+        !parsedNetworks().isEmpty && invalidNetworks.isEmpty
     }
 
     var settingsValid: Bool {
@@ -409,10 +404,6 @@ final class VPNManager: ObservableObject {
 
     func connect() {
         guard !busy, settingsValid, !foreignTunnel else { return }
-        guard !routeAll else {
-            lastError = "Full-tunnel пока в разработке. Используй «Только выбранные сети»."
-            return
-        }
         runPrivileged(request: requestFile(action: "connect"), action: "Подключаюсь…") { result in
             if Self.isCancelled(result) {
                 self.lastError = "Подключение отменено (диалог пароля закрыт)."
@@ -561,7 +552,7 @@ final class VPNManager: ObservableObject {
         SERVER=\(b64(server.trimmingCharacters(in: .whitespaces)))
         USERNAME=\(b64(username))
         PASSWORD=\(b64(password))
-        ROUTE_ALL=\(b64(routeAll ? "true" : "false"))
+        ROUTE_ALL=\(b64("false"))
         NETWORKS=\(b64(nets))
         """
     }
@@ -649,207 +640,6 @@ final class VPNManager: ObservableObject {
         s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
     }
 
-    private func pppEscape(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
-         .replacingOccurrences(of: "\"", with: "\\\"")
-         .replacingOccurrences(of: "\n", with: "")
-    }
-
-    private func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    private func connectScript() -> String {
-        let cleanServer = server.trimmingCharacters(in: .whitespaces)
-        let helperCommand = "\(shellQuote(Self.helperPath)) -server \(shellQuote(cleanServer)) -log \(shellQuote(Self.logPath))"
-        let opts = """
-        nodetach
-        pty "\(pppEscape(helperCommand))"
-        user "\(pppEscape(username))"
-        password "\(pppEscape(password))"
-        noauth
-        noipdefault
-        ipcp-accept-local
-        ipcp-accept-remote
-        nodefaultroute
-        noccp
-        noacsp
-        novj
-        novjccomp
-        nopcomp
-        noaccomp
-        receive-all
-        asyncmap 0
-        mtu \(Self.pppMTU)
-        mru \(Self.pppMTU)
-        lcp-echo-interval 30
-        lcp-echo-failure 3
-        debug
-        logfile \(Self.logPath)
-        """
-        var routeCmds = ""
-        if routeAll {
-            routeCmds = """
-                # Full-tunnel: не используем pppd defaultroute/usepeerdns.
-                # Маршрут до L2TP-сервера уже закреплён через обычный шлюз,
-                # default добавляем сами через ppp0. DNS macOS не трогаем.
-                /sbin/route -n delete default >/dev/null 2>&1 || true
-                /sbin/route -n add default -interface ppp0 >/dev/null 2>&1 || /sbin/route -n add default "$PEER" >/dev/null 2>&1 || RTERR=1
-
-            """
-        } else {
-            for net in parsedNetworks() where Self.isValidCIDR(net) {
-                // BR-02: фиксируем неудачные route add вместо молчаливого игнора
-                routeCmds += """
-                if [ -n "$PEER" ]; then
-                  /sbin/route -n add -net '\(net)' "$PEER" >/dev/null 2>&1 || /sbin/route -n change -net '\(net)' "$PEER" >/dev/null 2>&1 || RTERR=1
-                else
-                  /sbin/route -n add -net '\(net)' -interface ppp0 >/dev/null 2>&1 || RTERR=1
-                fi
-
-                """
-            }
-        }
-        return """
-        #!/bin/bash
-        # Сгенерировано L2TP Office.app
-        OPTS=\(Self.optsPath)
-        PIDF=\(Self.pidPath)
-        HELPER=\(shellQuote(Self.helperPath))
-        SERVER_HOST=\(shellQuote(cleanServer))
-        # BR-11: opts-файл с паролем удаляется при любом завершении скрипта
-        trap 'rm -f "$OPTS"' EXIT
-        if [ ! -x "$HELPER" ]; then
-          echo "HELPER-MISSING: $HELPER"
-          exit 0
-        fi
-        # BR-06: перед kill проверяем, что PID из pidfile действительно pppd
-        OLDPID=$(cat "$PIDF" 2>/dev/null)
-        if [ -n "$OLDPID" ]; then
-          case "$(ps -p "$OLDPID" -o comm= 2>/dev/null)" in
-            *pppd) kill "$OLDPID" 2>/dev/null; sleep 1 ;;
-          esac
-        fi
-        # BR-18: перед новым подключением чистим стейл-стор от прошлых сессий,
-        # иначе configd может держать мёртвый PPP-сервис как Primary
-        if ! /sbin/ifconfig ppp0 >/dev/null 2>&1; then
-          for K in $(echo 'list State:/Network/Service/[^/]+/IPv4' | /usr/sbin/scutil | /usr/bin/awk '{print $NF}'); do
-            if echo "show $K" | /usr/sbin/scutil | /usr/bin/grep -q 'InterfaceName : ppp0'; then
-              printf 'remove %s\\nquit\\n' "$K" | /usr/sbin/scutil
-            fi
-          done
-        fi
-        # Для full-tunnel важно оставить транспорт L2TP до VPN-сервера снаружи туннеля.
-        # Иначе после defaultroute часть UDP-трафика к самому серверу может уйти в ppp0.
-        BASE_GW=$(/sbin/route -n get "$SERVER_HOST" 2>/dev/null | /usr/bin/awk '/gateway:/{print $2; exit}')
-        if [ -n "$BASE_GW" ]; then
-          /sbin/route -n add -host "$SERVER_HOST" "$BASE_GW" >/dev/null 2>&1 || \
-          /sbin/route -n change -host "$SERVER_HOST" "$BASE_GW" >/dev/null 2>&1 || true
-        fi
-        umask 077
-        cat > "$OPTS" <<'PPPEOF'
-        \(opts)
-        PPPEOF
-        : > \(Self.logPath); chmod 644 \(Self.logPath)
-        /usr/sbin/pppd file "$OPTS" >>\(Self.logPath) 2>&1 &
-        PID=$!
-        echo "$PID" > "$PIDF"
-        RTERR=
-        for i in $(seq 1 25); do
-          sleep 1
-          if ! kill -0 "$PID" 2>/dev/null; then
-            if grep -qi 'auth.*fail\\|CHAP.*fail' \(Self.logPath); then echo "AUTHFAIL"; else echo "FAILED"; fi
-            exit 0
-          fi
-          IP=$(/sbin/ifconfig ppp0 2>/dev/null | awk '/inet /{print $2}')
-          if [ -n "$IP" ]; then
-            sleep 1
-            PEER=$(/sbin/ifconfig ppp0 2>/dev/null | /usr/bin/awk '/inet /{print $4; exit}')
-        \(routeCmds)
-            if [ -n "$RTERR" ]; then echo "CONNECTED-ROUTEWARN $IP"; else echo "CONNECTED $IP"; fi
-            exit 0
-          fi
-        done
-        kill "$PID" 2>/dev/null
-        echo "TIMEOUT"
-        """
-    }
-
-    private func disconnectScript() -> String {
-        return """
-        #!/bin/bash
-        PIDF=\(Self.pidPath)
-        # BR-05/BR-06: убиваем ТОЛЬКО свои pppd — по маркеру opts-файла в argv
-        # и по pidfile с проверкой имени процесса. Чужие pppd не трогаем.
-        PIDS=$(/usr/bin/pgrep -f '\(Self.optsPath)')
-        OLDPID=$(cat "$PIDF" 2>/dev/null)
-        if [ -n "$OLDPID" ]; then
-          case "$(ps -p "$OLDPID" -o comm= 2>/dev/null)" in
-            *pppd) PIDS="$PIDS $OLDPID" ;;
-          esac
-        fi
-        rm -f "$PIDF"
-        if [ -z "$(echo $PIDS | tr -d ' ')" ]; then echo "DONE (нечего отключать)"; exit 0; fi
-        for P in $PIDS; do kill -TERM "$P" 2>/dev/null; done
-        # даём pppd корректно снять маршруты и DNS
-        for i in 1 2 3 4 5; do
-          ALIVE=
-          for P in $PIDS; do kill -0 "$P" 2>/dev/null && ALIVE=1; done
-          [ -z "$ALIVE" ] && break
-          sleep 1
-        done
-        for P in $PIDS; do kill -KILL "$P" 2>/dev/null; done
-        sleep 1
-        # BR-18: pppd может умереть, не откатив сетевой стор (committed PPP store).
-        # Тогда PrimaryService остаётся мёртвым PPP-сервисом: default route деградирует
-        # до interface-scoped, глобальный DNS пустеет — интернет пропадает.
-        # Чистим стейл-ключи State:/Network/Service/*/IPv4 с InterfaceName ppp0.
-        if ! /sbin/ifconfig ppp0 >/dev/null 2>&1; then
-          for K in $(echo 'list State:/Network/Service/[^/]+/IPv4' | /usr/sbin/scutil | /usr/bin/awk '{print $NF}'); do
-            if echo "show $K" | /usr/sbin/scutil | /usr/bin/grep -q 'InterfaceName : ppp0'; then
-              printf 'remove %s\\nquit\\n' "$K" | /usr/sbin/scutil
-            fi
-          done
-          sleep 1
-        fi
-        # BR-18: восстановить глобальный default route — с повторами, т.к. конфигурация
-        # может переигрываться configd в течение нескольких секунд после teardown
-        for T in 1 2 3 4 5; do
-          /sbin/route -n get default 2>/dev/null | /usr/bin/grep -q 'interface: en' && break
-          for IF in $(/sbin/ifconfig -lu); do
-            case "$IF" in en*) ;; *) continue ;; esac
-            /sbin/ifconfig "$IF" 2>/dev/null | grep -q 'inet ' || continue
-            GW=$(/usr/sbin/ipconfig getoption "$IF" router 2>/dev/null)
-            if [ -n "$GW" ]; then
-              /sbin/route -n delete default >/dev/null 2>&1
-              /sbin/route -n add default "$GW" >/dev/null 2>&1
-              break
-            fi
-          done
-          sleep 1
-        done
-        # BR-18: если глобальный DNS так и остался пустым — обновить DHCP-аренду
-        # (только на интерфейсе, который реально работает по DHCP)
-        for K in State:/Network/Global/DNS State:/Network/Global/IPv4; do
-          printf 'remove %s\\nquit\\n' "$K" | /usr/sbin/scutil >/dev/null 2>&1 || true
-        done
-        for IF in $(/sbin/ifconfig -lu); do
-          case "$IF" in en*) ;; *) continue ;; esac
-          if /usr/sbin/ipconfig getpacket "$IF" 2>/dev/null | /usr/bin/grep -q yiaddr; then
-            /usr/sbin/ipconfig set "$IF" DHCP >/dev/null 2>&1 || true
-          fi
-        done
-        sleep 1
-        for T in 1 2 3 4 5; do
-          echo 'show State:/Network/Global/DNS' | /usr/sbin/scutil | /usr/bin/grep -q ServerAddresses && break
-          sleep 1
-        done
-        /usr/bin/dscacheutil -flushcache 2>/dev/null
-        /usr/bin/killall -HUP mDNSResponder 2>/dev/null
-        echo "DONE"
-        """
-    }
-
     // MARK: Helpers
 
     static func run(_ path: String, _ args: [String]) -> String {
@@ -911,6 +701,12 @@ struct ContentView: View {
     private var disconnectDisabled: Bool {
         !vpn.isConnected || vpn.busy || vpn.foreignTunnel
     }
+    private var connectingInProgress: Bool {
+        vpn.busy && !vpn.isConnected && vpn.statusText.contains("Подключ")
+    }
+    private var stopButtonDisabled: Bool {
+        connectingInProgress ? vpn.foreignTunnel : disconnectDisabled
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -925,20 +721,33 @@ struct ContentView: View {
                         .font(.title3).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Text(appVersion)
-                    .font(.callout.weight(.medium))
+                Button {
+                    updater.checkForUpdates(silent: false)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: updater.installing ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
+                            .foregroundStyle(updater.installing ? .blue : .secondary)
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(appVersion)
+                                .font(.callout.weight(.medium))
+                            if !updater.statusText.isEmpty {
+                                Text(updater.statusText)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
                     .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .disabled(updater.checking || updater.installing)
+                .help("Проверить обновления")
                 if vpn.busy { ProgressView().controlSize(.small) }
             }
 
             if !vpn.lastError.isEmpty {
                 Label(vpn.lastError, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                    .font(.callout)
-            }
-            if !updater.statusText.isEmpty {
-                Label(updater.statusText, systemImage: updater.installing ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
-                    .foregroundStyle(updater.installing ? .blue : .secondary)
                     .font(.callout)
             }
             if vpn.foreignTunnel {
@@ -988,29 +797,6 @@ struct ContentView: View {
                         }
                     }
                     GridRow {
-                        Text("Трафик")
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 8) {
-                                Circle()
-                                    .fill(.secondary.opacity(0.35))
-                                    .frame(width: 16, height: 16)
-                                Text("Весь трафик через VPN — в разработке")
-                                    .foregroundStyle(.secondary)
-                            }
-                            HStack(spacing: 8) {
-                                ZStack {
-                                    Circle()
-                                        .fill(.blue)
-                                        .frame(width: 16, height: 16)
-                                    Circle()
-                                        .fill(.white.opacity(0.8))
-                                        .frame(width: 5, height: 5)
-                                }
-                                Text("Только выбранные сети")
-                            }
-                        }
-                    }
-                    GridRow {
                         Text("Сети")
                         VStack(alignment: .leading, spacing: 2) {
                             TextField("например: 172.16.99.0/24", text: $vpn.networks)
@@ -1055,24 +841,23 @@ struct ContentView: View {
                 .opacity(connectDisabled ? 0.45 : 1.0)   // BR-08: явная индикация disabled
 
                 Button {
-                    vpn.disconnect()
+                    if connectingInProgress {
+                        vpn.emergencyStop()
+                    } else {
+                        vpn.disconnect()
+                    }
                 } label: {
-                    Label("Отключить", systemImage: "lock.open").frame(maxWidth: .infinity)
+                    Label(
+                        connectingInProgress ? "Остановить подключение" : "Отключить",
+                        systemImage: connectingInProgress ? "xmark.octagon.fill" : "lock.open"
+                    )
+                    .frame(maxWidth: .infinity)
                 }
                 .controlSize(.large)
-                .disabled(disconnectDisabled)
-                .opacity(disconnectDisabled ? 0.45 : 1.0)
+                .tint(connectingInProgress ? .red : .accentColor)
+                .disabled(stopButtonDisabled)
+                .opacity(stopButtonDisabled ? 0.45 : 1.0)
             }
-
-            Button {
-                vpn.emergencyStop()
-            } label: {
-                Label("Остановить подключение", systemImage: "xmark.octagon.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .controlSize(.large)
-            .tint(.red)
-            .help("Аварийно останавливает процессы L2TP Office и восстанавливает маршруты")
 
             // Log
             GroupBox("Лог PPP/L2TP") {
@@ -1124,6 +909,12 @@ struct MenuContent: View {
     private var disconnectDisabled: Bool {
         !vpn.isConnected || vpn.busy || vpn.foreignTunnel
     }
+    private var connectingInProgress: Bool {
+        vpn.busy && !vpn.isConnected && vpn.statusText.contains("Подключ")
+    }
+    private var stopButtonDisabled: Bool {
+        connectingInProgress ? vpn.foreignTunnel : disconnectDisabled
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1147,21 +938,22 @@ struct MenuContent: View {
                 .opacity(connectDisabled ? 0.5 : 1.0)
 
                 Button {
-                    vpn.disconnect()
+                    if connectingInProgress {
+                        vpn.emergencyStop()
+                    } else {
+                        vpn.disconnect()
+                    }
                 } label: {
-                    Label("Отключить", systemImage: "lock.open").frame(maxWidth: .infinity)
-                }
-                .disabled(disconnectDisabled)
-                .opacity(disconnectDisabled ? 0.5 : 1.0)
-            }
-            Button {
-                vpn.emergencyStop()
-            } label: {
-                Label("Остановить подключение", systemImage: "xmark.octagon.fill")
+                    Label(
+                        connectingInProgress ? "Остановить подключение" : "Отключить",
+                        systemImage: connectingInProgress ? "xmark.octagon.fill" : "lock.open"
+                    )
                     .frame(maxWidth: .infinity)
+                }
+                .tint(connectingInProgress ? .red : .accentColor)
+                .disabled(stopButtonDisabled)
+                .opacity(stopButtonDisabled ? 0.5 : 1.0)
             }
-            .tint(.red)
-            .help("Аварийная остановка зависшего подключения")
             Divider()
             HStack {
                 Button("Открыть окно") {
