@@ -497,10 +497,16 @@ final class VPNManager: ObservableObject {
         lastError = ""   // OPT-2: старая ошибка не висит во время новой попытки
         DispatchQueue.global(qos: .userInitiated).async {
             let tmp = NSTemporaryDirectory() + "l2tp-action-\(UUID().uuidString).sh"
-            defer { try? FileManager.default.removeItem(atPath: tmp) }
+            let askpass = NSTemporaryDirectory() + "l2tp-askpass-\(UUID().uuidString).sh"
+            defer {
+                try? FileManager.default.removeItem(atPath: tmp)
+                try? FileManager.default.removeItem(atPath: askpass)
+            }
             do {
                 try script.write(toFile: tmp, atomically: true, encoding: .utf8)
                 try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tmp)
+                try "#!/bin/sh\nexit 1\n".write(toFile: askpass, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: askpass)
             } catch {
                 DispatchQueue.main.async {
                     self.busy = false
@@ -509,7 +515,21 @@ final class VPNManager: ObservableObject {
                 }
                 return
             }
-            let osa = "do shell script \"/bin/bash '\(tmp)' 2>&1\" with administrator privileges"
+            if !Self.touchIDSudoConfigured() {
+                let setup = Self.installTouchIDSudo()
+                if Self.isCancelled(setup) || !Self.touchIDSudoConfigured() {
+                    DispatchQueue.main.async {
+                        self.busy = false
+                        self.lastError = Self.isCancelled(setup)
+                            ? "Настройка Touch ID отменена."
+                            : "Не удалось включить Touch ID для sudo: \(setup)"
+                        self.refresh()
+                    }
+                    return
+                }
+            }
+            let command = "/usr/bin/env SUDO_ASKPASS=\(Self.shellQuote(askpass)) /usr/bin/sudo -A -p '' /bin/bash \(Self.shellQuote(tmp)) 2>&1"
+            let osa = "do shell script \"\(Self.appleScriptQuoted(command))\""
             let out = Self.run("/usr/bin/osascript", ["-e", osa])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             DispatchQueue.main.async {
@@ -518,6 +538,54 @@ final class VPNManager: ObservableObject {
                 self.refresh()
             }
         }
+    }
+
+    private static func touchIDSudoConfigured() -> Bool {
+        guard let s = try? String(contentsOfFile: "/etc/pam.d/sudo_local", encoding: .utf8) else { return false }
+        return s
+            .split(separator: "\n")
+            .contains { line in
+                let t = line.trimmingCharacters(in: .whitespaces)
+                return !t.hasPrefix("#") && t.contains("pam_tid.so")
+            }
+    }
+
+    private static func installTouchIDSudo() -> String {
+        let script = """
+        set -e
+        TARGET=/etc/pam.d/sudo_local
+        TMP=/etc/pam.d/sudo_local.l2tp-office.$$
+        if [ -f "$TARGET" ]; then
+          cp "$TARGET" "$TMP"
+        elif [ -f /etc/pam.d/sudo_local.template ]; then
+          cp /etc/pam.d/sudo_local.template "$TMP"
+        else
+          : > "$TMP"
+        fi
+        if ! grep -v '^[[:space:]]*#' "$TMP" | grep -q 'pam_tid\\.so'; then
+          {
+            echo 'auth       sufficient     pam_tid.so'
+            cat "$TMP"
+          } > "$TMP.new"
+          mv "$TMP.new" "$TMP"
+        fi
+        chown root:wheel "$TMP"
+        chmod 0444 "$TMP"
+        mv "$TMP" "$TARGET"
+        echo TOUCHID-SUDO-READY
+        """
+        let command = "/bin/sh -c \(shellQuote(script))"
+        let osa = "do shell script \"\(appleScriptQuoted(command))\" with administrator privileges"
+        return run("/usr/bin/osascript", ["-e", osa])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func shellQuote(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func appleScriptQuoted(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
     }
 
     private func pppEscape(_ s: String) -> String {
