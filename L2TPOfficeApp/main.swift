@@ -526,7 +526,7 @@ final class VPNManager: ObservableObject {
     private func connectScript() -> String {
         let cleanServer = server.trimmingCharacters(in: .whitespaces)
         let helperCommand = "\(shellQuote(Self.helperPath)) -server \(shellQuote(cleanServer)) -log \(shellQuote(Self.logPath))"
-        var opts = """
+        let opts = """
         nodetach
         pty "\(pppEscape(helperCommand))"
         user "\(pppEscape(username))"
@@ -551,11 +551,17 @@ final class VPNManager: ObservableObject {
         debug
         logfile \(Self.logPath)
         """
-        if routeAll {
-            opts += "\ndefaultroute\nusepeerdns"
-        }
         var routeCmds = ""
-        if !routeAll {
+        if routeAll {
+            routeCmds = """
+                # Full-tunnel: не используем pppd defaultroute/usepeerdns.
+                # Маршрут до L2TP-сервера уже закреплён через обычный шлюз,
+                # default добавляем сами через ppp0. DNS macOS не трогаем.
+                /sbin/route -n delete default >/dev/null 2>&1 || true
+                /sbin/route -n add default -interface ppp0 >/dev/null 2>&1 || /sbin/route -n add default "$PEER" >/dev/null 2>&1 || RTERR=1
+
+            """
+        } else {
             for net in parsedNetworks() where Self.isValidCIDR(net) {
                 // BR-02: фиксируем неудачные route add вместо молчаливого игнора
                 routeCmds += """
@@ -609,7 +615,7 @@ final class VPNManager: ObservableObject {
         \(opts)
         PPPEOF
         : > \(Self.logPath); chmod 644 \(Self.logPath)
-        /usr/sbin/pppd file "$OPTS" >/dev/null 2>&1 &
+        /usr/sbin/pppd file "$OPTS" >>\(Self.logPath) 2>&1 &
         PID=$!
         echo "$PID" > "$PIDF"
         RTERR=

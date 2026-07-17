@@ -53,6 +53,8 @@ ifconfig ppp0               # статус
 
 **User-space L2TP backend.** Начиная с версии 1.13 приложение не использует Apple `L2TP.ppp`: `pppd` запускается поверх `pty`, а отдельный helper внутри `.app` сам устанавливает UDP/L2TPv2-сессию и мостит PPP-кадры. Это сделано, чтобы не трогать системный L2TP over IPsec и обойти проблему, где ICMP через Apple L2TP-плагин работал, а TCP зависал в `SYN_SENT`.
 
+**Full-tunnel.** Приложение не использует `pppd defaultroute/usepeerdns`: маршрут до L2TP-сервера закрепляется через обычный шлюз, default route добавляется приложением через `ppp0`, а DNS macOS не меняется.
+
 **Соответствие опций Keenetic → pppd:**
 
 | Keenetic | pppd |
@@ -79,6 +81,8 @@ ifconfig ppp0               # статус
 
 ## История версий
 
+- **1.15** — full-tunnel переведён на ручную маршрутизацию: `pppd defaultroute/usepeerdns` не используются, default добавляется через `ppp0`, DNS macOS не трогается.
+- **1.14** — исправлен запуск full-tunnel в user-space backend: `nodefaultroute` больше не конфликтует с `defaultroute`, ошибки раннего старта `pppd` попадают в лог окна.
 - **1.13** — внедрён несистемный L2TPv2 helper: `pppd` работает через `pty`, Apple `L2TP.ppp` и `/etc/ppp/options` больше не используются для основного подключения.
 - **1.12** — откат от системного L2TP service: приложение снова не создаёт/не меняет macOS VPN-профили и готовится к изолированному user-space L2TP backend.
 - **1.8** — для L2TP/PPP отключены VJ TCP header compression и PPP field compression, добавлены более строгие PPP-опции для TCP через туннель.
