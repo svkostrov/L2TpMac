@@ -1021,7 +1021,7 @@ struct MenuContent: View {
                 Button {
                     showMainWindow()
                 } label: {
-                    Label("Открыть окно", systemImage: "macwindow")
+                    Label("Настройки", systemImage: "gearshape.fill")
                         .font(.callout.weight(.semibold))
                         .frame(maxWidth: .infinity)
                 }
@@ -1058,7 +1058,7 @@ struct MenuContent: View {
 
             Divider()
 
-            VStack(spacing: 4) {
+            HStack(spacing: 12) {
                 Button {
                     updater.checkForUpdates(silent: false)
                 } label: {
@@ -1082,17 +1082,17 @@ struct MenuContent: View {
                 Button {
                     NSWorkspace.shared.open(repositoryURL)
                 } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 6) {
                         Image(systemName: "chevron.left.forwardslash.chevron.right")
-                            .frame(width: 18)
                         Text("GitHub")
                             .font(.callout.weight(.medium))
-                        Spacer()
                         Image(systemName: "arrow.up.right")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
             .buttonStyle(.plain)
