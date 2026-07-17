@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.32"
+private let requiredRootHelperVersion = "1.38"
 
 // MARK: - GitHub updater
 
@@ -243,6 +243,16 @@ final class VPNManager: ObservableObject {
     @Published var statusText = "Отключено"
     @Published var lastError = ""
     @Published var logText = ""
+    @Published var reconnectEnabled = false {
+        didSet {
+            persist()
+            if loaded && !reconnectEnabled {
+                shouldMaintainConnection = false
+                cancelReconnectTimer()
+            }
+        }
+    }
+    @Published var reconnecting = false
 
     // Settings
     @Published var server = "" { didSet { persist() } }
@@ -274,6 +284,9 @@ final class VPNManager: ObservableObject {
     static let pppMTU = 1200
     private var loaded = false
     private var timer: Timer?
+    private var reconnectTimer: Timer?
+    private var shouldMaintainConnection = false
+    private var wasConnected = false
 
     init() {
         let d = UserDefaults.standard
@@ -284,6 +297,7 @@ final class VPNManager: ObservableObject {
             ? "172.16.99.0/24"
             : savedNetworks!
         autoConnect = d.bool(forKey: "autoConnect")
+        reconnectEnabled = d.bool(forKey: "reconnectEnabled")
         password = Self.decodeStoredPassword(d.string(forKey: "vpnPasswordLocal") ?? "")
         launchAtLogin = (SMAppService.mainApp.status == .enabled)
         loaded = true
@@ -310,6 +324,7 @@ final class VPNManager: ObservableObject {
         d.set(username, forKey: "username")
         d.set(networks, forKey: "networks")
         d.set(autoConnect, forKey: "autoConnect")
+        d.set(reconnectEnabled, forKey: "reconnectEnabled")
         d.set(Self.encodeStoredPassword(password), forKey: "vpnPasswordLocal")
     }
 
@@ -391,12 +406,23 @@ final class VPNManager: ObservableObject {
                 self.isConnected = up && oursAlive
                 self.foreignTunnel = up && !oursAlive
                 if !self.busy {
-                    if self.isConnected { self.statusText = "Подключено" }
+                    if self.reconnecting { self.statusText = "Ожидаю переподключение…" }
+                    else if self.isConnected { self.statusText = "Подключено" }
                     else if self.foreignTunnel { self.statusText = "Активен сторонний PPP-туннель" }
                     else { self.statusText = "Отключено" }
                 }
                 self.logText = log
+                self.handleReconnectAfterRefresh(up: self.isConnected || self.foreignTunnel)
             }
+        }
+    }
+
+    private func handleReconnectAfterRefresh(up: Bool) {
+        defer { wasConnected = up }
+        guard loaded else { return }
+        guard reconnectEnabled, shouldMaintainConnection, !foreignTunnel else { return }
+        if wasConnected, !up, !busy {
+            scheduleReconnect(reason: "Соединение оборвалось — переподключаюсь…")
         }
     }
 
@@ -404,8 +430,13 @@ final class VPNManager: ObservableObject {
 
     func connect() {
         guard !busy, settingsValid, !foreignTunnel else { return }
+        shouldMaintainConnection = true
+        reconnecting = false
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
         runPrivileged(request: requestFile(action: "connect"), action: "Подключаюсь…") { result in
             if Self.isCancelled(result) {
+                self.shouldMaintainConnection = false
                 self.lastError = "Подключение отменено (диалог пароля закрыт)."
             } else if result.contains("CONNECTED-ROUTEWARN") {
                 self.lastError = "Подключено, но часть маршрутов не добавилась — проверь список сетей."
@@ -422,11 +453,19 @@ final class VPNManager: ObservableObject {
             } else {
                 self.lastError = result
             }
+            if self.reconnectEnabled,
+               self.shouldMaintainConnection,
+               !result.contains("CONNECTED"),
+               !Self.isCancelled(result) {
+                self.scheduleReconnect(reason: self.lastError.isEmpty ? "Не подключилось — пробую снова…" : self.lastError)
+            }
         }
     }
 
     func disconnect() {
         guard !busy, !foreignTunnel else { return }
+        shouldMaintainConnection = false
+        cancelReconnectTimer()
         runPrivileged(request: requestFile(action: "disconnect"), action: "Отключаю…") { result in
             // BR-04: отмена диалога — явное сообщение, туннель остался
             self.lastError = Self.isCancelled(result) ? "Отключение отменено (диалог пароля закрыт)." : ""
@@ -434,6 +473,8 @@ final class VPNManager: ObservableObject {
     }
 
     func emergencyStop() {
+        shouldMaintainConnection = false
+        cancelReconnectTimer()
         runPrivileged(request: requestFile(action: "disconnect"), action: "Аварийно останавливаю подключение…") { result in
             if Self.isCancelled(result) {
                 self.lastError = "Аварийная остановка отменена."
@@ -443,6 +484,34 @@ final class VPNManager: ObservableObject {
                 self.lastError = result
             }
         }
+    }
+
+    private func scheduleReconnect(reason: String) {
+        guard reconnectEnabled, shouldMaintainConnection, settingsValid, !busy, !isConnected, !foreignTunnel else { return }
+        reconnectTimer?.invalidate()
+        reconnecting = true
+        statusText = "Ожидаю переподключение…"
+        lastError = reason
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.reconnectTimer = nil
+            guard self.reconnectEnabled,
+                  self.shouldMaintainConnection,
+                  self.settingsValid,
+                  !self.busy,
+                  !self.isConnected,
+                  !self.foreignTunnel else {
+                self.reconnecting = false
+                return
+            }
+            self.connect()
+        }
+    }
+
+    private func cancelReconnectTimer() {
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
+        reconnecting = false
     }
 
     func clearLog() {
@@ -702,7 +771,7 @@ struct ContentView: View {
         !vpn.isConnected || vpn.busy || vpn.foreignTunnel
     }
     private var connectingInProgress: Bool {
-        vpn.busy && !vpn.isConnected && vpn.statusText.contains("Подключ")
+        (vpn.busy && !vpn.isConnected && vpn.statusText.contains("Подключ")) || vpn.reconnecting
     }
     private var stopButtonDisabled: Bool {
         connectingInProgress ? vpn.foreignTunnel : disconnectDisabled
@@ -824,6 +893,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Toggle("Запускать приложение при входе в систему", isOn: $vpn.launchAtLogin)
                     Toggle("Подключаться автоматически при запуске приложения", isOn: $vpn.autoConnect)
+                    Toggle("Автопереподключение при обрыве", isOn: $vpn.reconnectEnabled)
                 }
                 .padding(6)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -910,7 +980,7 @@ struct MenuContent: View {
         !vpn.isConnected || vpn.busy || vpn.foreignTunnel
     }
     private var connectingInProgress: Bool {
-        vpn.busy && !vpn.isConnected && vpn.statusText.contains("Подключ")
+        (vpn.busy && !vpn.isConnected && vpn.statusText.contains("Подключ")) || vpn.reconnecting
     }
     private var stopButtonDisabled: Bool {
         connectingInProgress ? vpn.foreignTunnel : disconnectDisabled

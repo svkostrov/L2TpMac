@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.32"
+ROOT_HELPER_VERSION="1.38"
 
 die() {
   echo "$1"
@@ -35,6 +35,16 @@ valid_cidr() {
   fi
   [[ "$prefix" =~ ^[0-9]+$ ]] || return 1
   [ "$prefix" -ge 0 ] && [ "$prefix" -le 32 ] || return 1
+  IFS=. read -r a b c d <<< "$ip"
+  for o in "$a" "$b" "$c" "$d"; do
+    [[ "$o" =~ ^[0-9]+$ ]] || return 1
+    [ "$o" -ge 0 ] && [ "$o" -le 255 ] || return 1
+  done
+  return 0
+}
+
+valid_ipv4() {
+  local ip="$1" a b c d
   IFS=. read -r a b c d <<< "$ip"
   for o in "$a" "$b" "$c" "$d"; do
     [[ "$o" =~ ^[0-9]+$ ]] || return 1
@@ -151,9 +161,13 @@ stop_tunnel_processes() {
 }
 
 disconnect_tunnel() {
-  local networks
+  local networks server
   networks="$(decode_key NETWORKS)"
+  server="$(decode_key SERVER)"
   stop_tunnel_processes
+  if [ -n "$server" ]; then
+    /sbin/route -n delete -host "$server" >/dev/null 2>&1 || true
+  fi
   sleep 1
   restore_network "$networks"
 }
@@ -164,21 +178,32 @@ clear_log() {
 }
 
 ensure_server_route() {
-  local server="$1" info default_info gw iface i
+  local server="$1" info gw iface i
   for i in 1 2 3 4 5 6 7 8 9 10; do
-    default_info=$(/sbin/route -n get default 2>/dev/null || true)
-    gw=$(printf '%s\n' "$default_info" | /usr/bin/awk '/gateway:/{print $2; exit}')
-    iface=$(printf '%s\n' "$default_info" | /usr/bin/awk '/interface:/{print $2; exit}')
-    if [ -n "$gw" ] && [[ "$iface" == en* ]]; then
+    # Важно: сначала убираем наш старый host-route, иначе route get покажет не
+    # текущий системный путь, а зафиксированный предыдущим запуском маршрут.
+    /sbin/route -n delete -host "$server" >/dev/null 2>&1 || true
+
+    info=$(/sbin/route -n get "$server" 2>/dev/null || true)
+    gw=$(printf '%s\n' "$info" | /usr/bin/awk '/gateway:/{print $2; exit}')
+    iface=$(printf '%s\n' "$info" | /usr/bin/awk '/interface:/{print $2; exit}')
+
+    # Пинним транспорт L2TP к тому же пути, который macOS выбрала бы сейчас сама:
+    # en0/Wi‑Fi, Ethernet, Amnezia/WireGuard utun или любой другой default-туннель.
+    if [ -n "$gw" ] && valid_ipv4 "$gw"; then
       /sbin/route -n add -host "$server" "$gw" >/dev/null 2>&1 || \
       /sbin/route -n change -host "$server" "$gw" >/dev/null 2>&1 || true
+    elif [ -n "$iface" ]; then
+      /sbin/route -n add -host "$server" -interface "$iface" >/dev/null 2>&1 || \
+      /sbin/route -n change -host "$server" -interface "$iface" >/dev/null 2>&1 || true
     fi
 
     info=$(/sbin/route -n get "$server" 2>/dev/null || true)
-    if printf '%s\n' "$info" | /usr/bin/grep -q 'interface: en'; then
+    if [ -n "$iface" ] && printf '%s\n' "$info" | /usr/bin/grep -q "interface: $iface"; then
       return 0
     fi
 
+    # Fallback для случая, когда SystemConfiguration ещё не успел вернуть route.
     for IF in $(/sbin/ifconfig -lu); do
       case "$IF" in en*) ;; *) continue ;; esac
       /sbin/ifconfig "$IF" 2>/dev/null | /usr/bin/grep -q 'inet ' || continue
