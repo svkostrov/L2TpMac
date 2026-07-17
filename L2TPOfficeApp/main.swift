@@ -87,7 +87,6 @@ final class AppUpdater: ObservableObject {
                 }
                 guard Self.compareVersions(release.version, appShortVersion) == .orderedDescending else {
                     self.statusText = "Актуальная версия"
-                    if !silent { self.showMessage(self.statusText) }
                     return
                 }
                 self.statusText = "Доступно v\(release.version)"
@@ -972,6 +971,7 @@ struct MenuContent: View {
     @EnvironmentObject var vpn: VPNManager
     @EnvironmentObject var updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
+    private let repositoryURL = URL(string: "https://github.com/svkostrov/L2TpMac")!
 
     private var connectDisabled: Bool {
         vpn.isConnected || vpn.busy || vpn.foreignTunnel || !vpn.settingsValid
@@ -986,19 +986,50 @@ struct MenuContent: View {
         connectingInProgress ? vpn.foreignTunnel : disconnectDisabled
     }
 
+    private func showMainWindow() {
+        // BR-17: openWindow из MenuBarExtra не всегда открывает закрытое окно —
+        // сначала ищем существующее окно и показываем его, иначе создаём новое
+        NSApp.activate(ignoringOtherApps: true)
+        if let win = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }) {
+            if win.isMiniaturized { win.deminiaturize(nil) }
+            win.makeKeyAndOrderFront(nil)
+        } else {
+            openWindow(id: "main")
+        }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(statusColor(vpn))
-                    .frame(width: 10, height: 10)
-                Text(vpn.isConnected ? "Подключено · \(vpn.localIP)" : vpn.statusText)
-                    .font(.headline)
-                    .lineLimit(2)
-                Spacer()
-                if vpn.busy { ProgressView().controlSize(.small) }
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(statusColor(vpn))
+                        .frame(width: 11, height: 11)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(vpn.isConnected ? "Подключено" : vpn.statusText)
+                            .font(.headline)
+                            .lineLimit(2)
+                        if vpn.isConnected {
+                            Text("\(vpn.localIP) → \(vpn.remoteIP)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    if vpn.busy { ProgressView().controlSize(.small) }
+                }
+                Button {
+                    showMainWindow()
+                } label: {
+                    Label("Открыть окно", systemImage: "macwindow")
+                        .font(.callout.weight(.semibold))
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
             }
-            HStack(spacing: 8) {
+
+            HStack(spacing: 10) {
                 Button {
                     vpn.connect()
                 } label: {
@@ -1024,45 +1055,61 @@ struct MenuContent: View {
                 .disabled(stopButtonDisabled)
                 .opacity(stopButtonDisabled ? 0.5 : 1.0)
             }
+
             Divider()
-            HStack {
-                Button("Открыть окно") {
-                    // BR-17: openWindow из MenuBarExtra не всегда открывает закрытое окно —
-                    // сначала ищем существующее окно и показываем его, иначе создаём новое
-                    NSApp.activate(ignoringOtherApps: true)
-                    if let win = NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true }) {
-                        if win.isMiniaturized { win.deminiaturize(nil) }
-                        win.makeKeyAndOrderFront(nil)
-                    } else {
-                        openWindow(id: "main")
+
+            VStack(spacing: 4) {
+                Button {
+                    updater.checkForUpdates(silent: false)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: updater.installing ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
+                            .frame(width: 18)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(appVersion)
+                                .font(.callout.weight(.medium))
+                            Text(updater.statusText.isEmpty ? "Проверить обновления" : updater.statusText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                Spacer()
-                Button("Выход") { vpn.quit() }   // BR-14: с подтверждением при активном туннеле
+                .disabled(updater.checking || updater.installing)
+
+                Button {
+                    NSWorkspace.shared.open(repositoryURL)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "chevron.left.forwardslash.chevron.right")
+                            .frame(width: 18)
+                        Text("GitHub")
+                            .font(.callout.weight(.medium))
+                        Spacer()
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+
+            Divider()
+
+            Button { vpn.quit() } label: {   // BR-14: с подтверждением при активном туннеле
+                Label("Выход", systemImage: "power")
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .font(.callout)
-            Button {
-                updater.checkForUpdates(silent: false)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: updater.installing ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(appVersion)
-                            .font(.callout.weight(.medium))
-                        Text(updater.statusText.isEmpty ? "Проверить обновления" : updater.statusText)
-                            .font(.caption)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .disabled(updater.checking || updater.installing)
         }
-        .padding(12)
-        .frame(width: 280)
+        .padding(14)
+        .frame(width: 300)
     }
 }
 
