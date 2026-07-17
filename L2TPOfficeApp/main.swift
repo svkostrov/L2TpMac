@@ -551,30 +551,40 @@ final class VPNManager: ObservableObject {
     }
 
     private static func installTouchIDSudo() -> String {
+        let setupPath = NSTemporaryDirectory() + "l2tp-touchid-setup-\(UUID().uuidString).sh"
+        defer { try? FileManager.default.removeItem(atPath: setupPath) }
         let script = """
-        set -e
+        #!/bin/bash
+        set -euo pipefail
         TARGET=/etc/pam.d/sudo_local
-        TMP=/etc/pam.d/sudo_local.l2tp-office.$$
+        WORK=$(/usr/bin/mktemp /tmp/l2tp-sudo-local.XXXXXX)
+        trap 'rm -f "$WORK" "$WORK.new"' EXIT
         if [ -f "$TARGET" ]; then
-          cp "$TARGET" "$TMP"
+          /bin/cp "$TARGET" "$WORK"
         elif [ -f /etc/pam.d/sudo_local.template ]; then
-          cp /etc/pam.d/sudo_local.template "$TMP"
+          /bin/cp /etc/pam.d/sudo_local.template "$WORK"
         else
-          : > "$TMP"
+          : > "$WORK"
         fi
-        if ! grep -v '^[[:space:]]*#' "$TMP" | grep -q 'pam_tid\\.so'; then
+        if ! /usr/bin/grep -v '^[[:space:]]*#' "$WORK" | /usr/bin/grep -q 'pam_tid\\.so'; then
           {
             echo 'auth       sufficient     pam_tid.so'
-            cat "$TMP"
-          } > "$TMP.new"
-          mv "$TMP.new" "$TMP"
+            /bin/cat "$WORK"
+          } > "$WORK.new"
+          /bin/mv "$WORK.new" "$WORK"
         fi
-        chown root:wheel "$TMP"
-        chmod 0444 "$TMP"
-        mv "$TMP" "$TARGET"
+        /usr/sbin/chown root:wheel "$WORK"
+        /bin/chmod 0444 "$WORK"
+        /bin/mv "$WORK" "$TARGET"
         echo TOUCHID-SUDO-READY
         """
-        let command = "/bin/sh -c \(shellQuote(script))"
+        do {
+            try script.write(toFile: setupPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: setupPath)
+        } catch {
+            return "Не удалось создать setup-скрипт Touch ID."
+        }
+        let command = "/bin/bash \(shellQuote(setupPath))"
         let osa = "do shell script \"\(appleScriptQuoted(command))\" with administrator privileges"
         return run("/usr/bin/osascript", ["-e", osa])
             .trimmingCharacters(in: .whitespacesAndNewlines)
