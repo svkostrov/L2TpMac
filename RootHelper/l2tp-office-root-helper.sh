@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.42"
+ROOT_HELPER_VERSION="1.48"
 
 die() {
   echo "$1"
@@ -161,9 +161,13 @@ stop_tunnel_processes() {
 }
 
 disconnect_tunnel() {
-  local networks server
+  local networks server log_message
   networks="$(decode_key NETWORKS)"
   server="$(decode_key SERVER)"
+  log_message="$(decode_key LOG_MESSAGE)"
+  if [ -n "$log_message" ]; then
+    append_log "$log_message"
+  fi
   stop_tunnel_processes
   if [ -n "$server" ]; then
     /sbin/route -n delete -host "$server" >/dev/null 2>&1 || true

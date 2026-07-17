@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.42"
+private let requiredRootHelperVersion = "1.48"
 
 // MARK: - GitHub updater
 
@@ -471,7 +471,10 @@ final class VPNManager: ObservableObject {
               !foreignTunnel,
               settingsValid else { return }
         remotePingFailures = 0
-        rebuildTunnel(reason: "Ping до PPP-сервера пропал — перестраиваю туннель…")
+        rebuildTunnel(
+            reason: "Ping до PPP-сервера пропал — перестраиваю туннель…",
+            logMessage: "L2TP Office: PPP remote ping lost; reconnecting tunnel through the current system path."
+        )
     }
 
     private func rebuildTunnelAfterSystemPathChangeIfNeeded() {
@@ -490,16 +493,19 @@ final class VPNManager: ObservableObject {
         }
         guard current != lastSystemPathSignature else { return }
         lastSystemPathSignature = current
-        rebuildTunnel(reason: "Системный путь к интернету изменился — перестраиваю туннель…")
+        rebuildTunnel(
+            reason: "Системный путь к интернету изменился — перестраиваю туннель…",
+            logMessage: "L2TP Office: default internet path changed; reconnecting tunnel through the current system connection."
+        )
     }
 
-    private func rebuildTunnel(reason: String) {
+    private func rebuildTunnel(reason: String, logMessage: String? = nil) {
         guard !rebuildInProgress else { return }
         rebuildInProgress = true
         reconnecting = true
         statusText = "Перестраиваю туннель…"
         lastError = reason
-        runPrivileged(request: requestFile(action: "disconnect"), action: "Перестраиваю туннель…") { result in
+        runPrivileged(request: requestFile(action: "disconnect", logMessage: logMessage), action: "Перестраиваю туннель…") { result in
             self.rebuildInProgress = false
             guard self.reconnectEnabled,
                   self.shouldMaintainConnection,
@@ -750,12 +756,12 @@ final class VPNManager: ObservableObject {
         }
     }
 
-    private func requestFile(action: String) -> String {
+    private func requestFile(action: String, logMessage: String? = nil) -> String {
         func b64(_ s: String) -> String {
             Data(s.utf8).base64EncodedString()
         }
         let nets = parsedNetworks().filter { Self.isValidCIDR($0) }.joined(separator: " ")
-        return """
+        var request = """
         ACTION=\(b64(action))
         SERVER=\(b64(server.trimmingCharacters(in: .whitespaces)))
         USERNAME=\(b64(username))
@@ -763,6 +769,10 @@ final class VPNManager: ObservableObject {
         ROUTE_ALL=\(b64("false"))
         NETWORKS=\(b64(nets))
         """
+        if let logMessage, !logMessage.isEmpty {
+            request += "LOG_MESSAGE=\(b64(logMessage))\n"
+        }
+        return request
     }
 
     private func clearLogOnLaunch() {
