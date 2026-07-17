@@ -81,6 +81,7 @@ ifconfig ppp0               # статус
 
 ## История версий
 
+- **1.16** — helper переведён с connected UDP на unconnected UDP socket, чтобы macOS выбирала актуальный source address и не падала с `can't assign requested address`.
 - **1.15** — full-tunnel переведён на ручную маршрутизацию: `pppd defaultroute/usepeerdns` не используются, default добавляется через `ppp0`, DNS macOS не трогается.
 - **1.14** — исправлен запуск full-tunnel в user-space backend: `nodefaultroute` больше не конфликтует с `defaultroute`, ошибки раннего старта `pppd` попадают в лог окна.
 - **1.13** — внедрён несистемный L2TPv2 helper: `pppd` работает через `pty`, Apple `L2TP.ppp` и `/etc/ppp/options` больше не используются для основного подключения.

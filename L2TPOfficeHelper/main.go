@@ -47,6 +47,7 @@ const (
 
 type l2tpClient struct {
 	conn          *net.UDPConn
+	remote        *net.UDPAddr
 	log           *log.Logger
 	localTunnel   uint16
 	peerTunnel    uint16
@@ -132,12 +133,13 @@ func newL2TPClient(server string, logger *log.Logger) (*l2tpClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.DialUDP("udp", nil, addr)
+	conn, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		return nil, err
 	}
 	return &l2tpClient{
 		conn:          conn,
+		remote:        addr,
 		log:           logger,
 		localTunnel:   randomID(),
 		localSession:  randomID(),
@@ -227,10 +229,13 @@ func (c *l2tpClient) handshake() error {
 func (c *l2tpClient) readLoop(pppOut io.Writer, errs chan<- error) {
 	buf := make([]byte, 4096)
 	for {
-		n, err := c.conn.Read(buf)
+		n, addr, err := c.conn.ReadFromUDP(buf)
 		if err != nil {
 			errs <- err
 			return
+		}
+		if !sameUDPAddr(addr, c.remote) {
+			continue
 		}
 		pkt := append([]byte(nil), buf[:n]...)
 		if isControl(pkt) {
@@ -281,7 +286,7 @@ func (c *l2tpClient) sendControl(tid, sid uint16, avps []avp) error {
 	_ = binary.Write(&pkt, binary.BigEndian, c.nr)
 	pkt.Write(body.Bytes())
 	c.ns++
-	_, err := c.conn.Write(pkt.Bytes())
+	_, err := c.conn.WriteToUDP(pkt.Bytes(), c.remote)
 	return err
 }
 
@@ -293,16 +298,19 @@ func (c *l2tpClient) sendAck(tid uint16) error {
 	_ = binary.Write(&pkt, binary.BigEndian, uint16(0))
 	_ = binary.Write(&pkt, binary.BigEndian, c.ns)
 	_ = binary.Write(&pkt, binary.BigEndian, c.nr)
-	_, err := c.conn.Write(pkt.Bytes())
+	_, err := c.conn.WriteToUDP(pkt.Bytes(), c.remote)
 	return err
 }
 
 func (c *l2tpClient) readControl() (*controlPacket, error) {
 	buf := make([]byte, 2048)
 	for {
-		n, err := c.conn.Read(buf)
+		n, addr, err := c.conn.ReadFromUDP(buf)
 		if err != nil {
 			return nil, err
+		}
+		if !sameUDPAddr(addr, c.remote) {
+			continue
 		}
 		pkt := append([]byte(nil), buf[:n]...)
 		if !isControl(pkt) {
@@ -318,8 +326,15 @@ func (c *l2tpClient) sendData(payload []byte) error {
 	_ = binary.Write(&pkt, binary.BigEndian, c.peerTunnel)
 	_ = binary.Write(&pkt, binary.BigEndian, c.peerSession)
 	pkt.Write(payload)
-	_, err := c.conn.Write(pkt.Bytes())
+	_, err := c.conn.WriteToUDP(pkt.Bytes(), c.remote)
 	return err
+}
+
+func sameUDPAddr(a, b *net.UDPAddr) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Port == b.Port && a.IP.Equal(b.IP)
 }
 
 func (c *l2tpClient) parseData(pkt []byte) ([]byte, bool) {
