@@ -7,6 +7,43 @@
 
 ---
 
+## Итерация проверки и исправлений 18.07.2026 (v1.54)
+
+Методика: повторное код-ревью `L2TPOfficeApp/main.swift`, `RootHelper/l2tp-office-root-helper.sh`, `L2TPOfficeHelper/main.go`, автотесты, сборка/установка в `/Applications`, проверка root-helper, живой сетевой connect/disconnect с текущими настройками, контроль default route и внешнего интернета.
+
+| ID | Статус | Что сделано / проверка |
+|----|--------|-------------------------|
+| BR-36 | **ПОДТВЕРЖДЁН ЗАКРЫТЫМ** | В коде больше нет `tail(Self.logPath, lines: 60)`, GUI читает полный файл через `readLog`. Добавлен source-regression тест, чтобы это не откатилось. |
+| BR-37 | **ПОДТВЕРЖДЁН КОДОМ** | В `MenuContent` осталась одна контекстная action-кнопка (`primaryActionTitle`) рядом со статусом, отдельный HStack «Подключить/Отключить» отсутствует, `.borderedProminent` больше не используется. Добавлен source-regression тест. |
+| BR-38 | **НОВОЕ / НЕ ИСПРАВЛЕНО** | В текущей Codex/macOS GUI-автоматизации после перезапуска `open -a "L2TP Office"` `System Events` видит процесс, но `windows=0`, а `screencapture` возвращает полностью чёрный кадр. Проверить визуальное масштабирование/клики окна в этой сессии достоверно не удалось. Были проверены несколько подходов к принудительному открытию окна (`WindowGroup`, отключение restoration, AppKit fallback-presenter), но они не дали подтверждённого улучшения в этом окружении и не оставлены в коде. Требуется ручная проверка на пользовательском рабочем столе. |
+| TEST-1 | **ДОБАВЛЕНО** | Новый `tests/source-regression-tests.sh` проверяет синхронизацию версии README/Info.plist, полный лог без `tail`, single-window scene + запрет New Window, контекстную menu bar action-кнопку и отсутствие `.borderedProminent`. |
+
+Проверки v1.54:
+
+| Проверка | Результат |
+|---|---|
+| `./tests/run-tests.sh` | OK |
+| `go test ./...` | OK |
+| `bash -n RootHelper/l2tp-office-root-helper.sh build-install.command push.command tests/*.sh` | OK |
+| `bash tests/root-helper-tests.sh` | OK |
+| `bash tests/source-regression-tests.sh` | OK |
+| `swiftc -parse-as-library L2TPOfficeApp/main.swift` | OK |
+| Сборка и установка `./build-install.command` в `/Applications` | OK |
+| Версия repo/app и `/Applications` | OK: `CFBundleShortVersionString = 1.54` |
+| `codesign --verify --deep --strict` для repo/app и `/Applications` | OK |
+| root-helper probe через `sudo -n` | OK: `ROOT-HELPER-VERSION 1.51` |
+| `file` для app/helper | OK: universal arm64+x86_64 |
+| Живой connect через root-helper с текущими настройками | OK: `CONNECTED 10.10.10.36`, `ppp0` поднят |
+| Split route | OK: `172.16.99.10` через `10.10.10.10`/`ppp0`, ping 3/3 |
+| Default route во время туннеля | OK: через `en0`/`192.168.1.1` |
+| Интернет во время/после туннеля | OK: GitHub `HTTP/2 200` |
+| Disconnect через root-helper | OK: `DONE`, `ppp0` снят, opts-файл отсутствует |
+| Целостность интернета во время connect/disconnect | OK: фоновый `ping 8.8.8.8` — 76/76 пакетов, 0% потерь |
+
+Ограничение: живые клики по GUI и визуальный resize/screenshot-тест окна в этой итерации не подтверждены из-за BR-38; сетевые функции проверены через тот же установленный root-helper, который вызывает GUI.
+
+---
+
 ## Итерация проверки и исправлений 17.07.2026 (v1.53)
 
 **BR-36 (исправлен). В окне отображались только последние 60 строк PPP/L2TP-лога**
