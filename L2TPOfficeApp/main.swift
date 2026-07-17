@@ -7,8 +7,7 @@ import Foundation
 
 private let appVersion: String = {
     let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-    let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
-    return "v\(short) (\(build))"
+    return "v\(short)"
 }()
 
 private let appShortVersion: String = {
