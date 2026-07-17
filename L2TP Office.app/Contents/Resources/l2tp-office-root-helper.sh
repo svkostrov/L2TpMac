@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.38"
+ROOT_HELPER_VERSION="1.41"
 
 die() {
   echo "$1"
@@ -177,6 +177,10 @@ clear_log() {
   chmod 644 "$LOG" 2>/dev/null || true
 }
 
+append_log() {
+  printf '%s : %s\n' "$(/bin/date '+%a %b %d %H:%M:%S %Y')" "$1" >> "$LOG" 2>/dev/null || true
+}
+
 ensure_server_route() {
   local server="$1" info gw iface i
   for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -287,6 +291,11 @@ PPPEOF
           /sbin/route -n add -net "$net" -interface ppp0 >/dev/null 2>&1 || rterr=1
         fi
       done
+      if [ -n "$rterr" ]; then
+        append_log "L2TP Office: туннель поднят, но часть маршрутов не добавилась. Локальный IP: $ip, сервер PPP: ${peer:-не определён}, сети: ${networks:-не заданы}."
+      else
+        append_log "L2TP Office: туннель успешно поднят. Локальный IP: $ip, сервер PPP: ${peer:-не определён}, сети через VPN: ${networks:-не заданы}."
+      fi
       if [ -n "$rterr" ]; then echo "CONNECTED-ROUTEWARN $ip"; else echo "CONNECTED $ip"; fi
       exit 0
     fi
