@@ -672,7 +672,6 @@ struct MenuContent: View {
             }
             Divider()
             HStack {
-                Text(appVersion)
                 Button("Открыть окно") {
                     // BR-17: openWindow из MenuBarExtra не всегда открывает закрытое окно —
                     // сначала ищем существующее окно и показываем его, иначе создаём новое
@@ -690,6 +689,10 @@ struct MenuContent: View {
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .font(.callout)
+            Text("Версия \(appVersion)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
         .padding(12)
         .frame(width: 280)
