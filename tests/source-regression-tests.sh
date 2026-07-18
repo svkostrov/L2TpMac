@@ -29,5 +29,7 @@ if /usr/bin/grep -Fq '.accentColor' L2TPOfficeApp/main.swift; then
 fi
 /usr/bin/grep -Fq 'Text("\(vpn.localIP) → \(vpn.remoteIP)")' L2TPOfficeApp/main.swift || fail "menu bar must show connected IPs"
 /usr/bin/grep -Fq 'Text(vpn.remotePingText)' L2TPOfficeApp/main.swift || fail "menu bar must show ping text, not only an icon"
+/usr/bin/grep -Fq 'return value <= 100 ? .green : .red' L2TPOfficeApp/main.swift || fail "menu bar ping text must be green up to 100 ms and red above 100 ms"
+/usr/bin/grep -Fq '.foregroundStyle(pingTextColor)' L2TPOfficeApp/main.swift || fail "menu bar ping text must use ping threshold color"
 
 echo "source regression tests OK"

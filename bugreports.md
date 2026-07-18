@@ -7,6 +7,28 @@
 
 ---
 
+## Итерация проверки и исправлений 18.07.2026 (v1.58)
+
+Методика: уточнение UX-требования пользователя к цвету ping в menu bar, код-ревью `MenuContent`, source-regression тест, сборка/установка в `/Applications`.
+
+| ID | Статус | Что сделано / проверка |
+|----|--------|-------------------------|
+| BR-42 | **ИСПРАВЛЕН** | Текст ping в menu bar теперь окрашивается по порогу: `<= 100 ms` зелёным, `> 100 ms` красным. Если ping неизвестен (`—`), остаётся предупреждающий оранжевый цвет; иконка ping остаётся нейтральной. |
+| TEST-4 | **ДОБАВЛЕНО** | Source-regression тест проверяет наличие порога `value <= 100 ? .green : .red` и применение `pingTextColor` к тексту ping. |
+
+Проверки v1.58:
+
+| Проверка | Результат |
+|---|---|
+| `./tests/run-tests.sh` | OK |
+| Сборка и установка `./build-install.command` в `/Applications` | OK |
+| Версия repo/app и `/Applications` | OK: `CFBundleShortVersionString = 1.58` |
+| `codesign --verify --deep --strict` для repo/app и `/Applications` | OK |
+| root-helper probe через `sudo -n` | OK: `ROOT-HELPER-VERSION 1.51` |
+| Публикация GitHub release | OK: `v1.58` |
+
+---
+
 ## Итерация проверки и исправлений 18.07.2026 (v1.57)
 
 Методика: проверка состояния git-репозитория, обновление `.gitignore`, снятие build artifact с отслеживания без удаления локальной сборки.

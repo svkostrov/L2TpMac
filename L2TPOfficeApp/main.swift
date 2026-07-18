@@ -1243,6 +1243,13 @@ struct MenuContent: View {
             .frame(minWidth: 118)
     }
 
+    private var pingTextColor: Color {
+        guard vpn.remotePingText != "—" else { return .orange }
+        let value = vpn.remotePingText.split(separator: " ").first.flatMap { Int($0) }
+        guard let value else { return .secondary }
+        return value <= 100 ? .green : .red
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 10) {
@@ -1287,12 +1294,13 @@ struct MenuContent: View {
                         if !vpn.remotePingText.isEmpty {
                             HStack(spacing: 4) {
                                 Image(systemName: "waveform.path.ecg")
+                                    .foregroundStyle(.secondary)
                                 Text(vpn.remotePingText)
                                     .monospacedDigit()
+                                    .foregroundStyle(pingTextColor)
                             }
                             .fixedSize(horizontal: true, vertical: false)
                             .font(.caption.weight(.medium))
-                            .foregroundStyle(vpn.remotePingText == "—" ? .orange : .secondary)
                             .padding(.vertical, 4)
                             .padding(.horizontal, 7)
                             .background(.quaternary, in: Capsule())
