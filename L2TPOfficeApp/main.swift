@@ -1210,6 +1210,9 @@ struct MenuContent: View {
         if connectingInProgress { return "xmark.octagon.fill" }
         return vpn.isConnected ? "lock.open" : "lock.fill"
     }
+    private var primaryActionIsDestructive: Bool {
+        connectingInProgress || vpn.isConnected
+    }
 
     private func showMainWindow() {
         // BR-17: openWindow из MenuBarExtra не всегда открывает закрытое окно —
@@ -1221,6 +1224,23 @@ struct MenuContent: View {
         } else {
             openWindow(id: "main")
         }
+    }
+
+    private func performPrimaryAction() {
+        if connectingInProgress {
+            vpn.emergencyStop()
+        } else if vpn.isConnected {
+            vpn.disconnect()
+        } else {
+            vpn.connect()
+        }
+    }
+
+    private var primaryActionLabel: some View {
+        Label(primaryActionTitle, systemImage: primaryActionIcon)
+            .font(.callout.weight(.semibold))
+            .lineLimit(1)
+            .frame(minWidth: 118)
     }
 
     var body: some View {
@@ -1235,22 +1255,21 @@ struct MenuContent: View {
                         .lineLimit(1)
                     .layoutPriority(1)
                     Spacer(minLength: 12)
-                    Button {
-                        if connectingInProgress {
-                            vpn.emergencyStop()
-                        } else if vpn.isConnected {
-                            vpn.disconnect()
+                    Group {
+                        if primaryActionIsDestructive {
+                            Button(action: performPrimaryAction) {
+                                primaryActionLabel
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.red)
                         } else {
-                            vpn.connect()
+                            Button(action: performPrimaryAction) {
+                                primaryActionLabel
+                            }
+                            .buttonStyle(.bordered)
                         }
-                    } label: {
-                        Label(primaryActionTitle, systemImage: primaryActionIcon)
-                            .font(.callout.weight(.semibold))
-                            .lineLimit(1)
-                            .frame(minWidth: 118)
                     }
                     .controlSize(.regular)
-                    .buttonStyle(.bordered)
                     .disabled(primaryActionDisabled)
                     .opacity(primaryActionDisabled ? 0.5 : 1.0)
                     if vpn.busy { ProgressView().controlSize(.small) }

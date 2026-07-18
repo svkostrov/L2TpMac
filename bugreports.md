@@ -7,6 +7,28 @@
 
 ---
 
+## Итерация проверки и исправлений 18.07.2026 (v1.56)
+
+Методика: уточнение UX-требования пользователя к menu bar action-кнопке, код-ревью `MenuContent`, source-regression тест, сборка/установка в `/Applications`.
+
+| ID | Статус | Что сделано / проверка |
+|----|--------|-------------------------|
+| BR-40 | **ИСПРАВЛЕН** | После v1.55 action-кнопка menu bar была полностью обычной и для подключения, и для отключения. По уточнению UX: «Подключить» должен оставаться обычным, а «Отключить»/«Остановить» должен быть красной акцентной кнопкой. В `MenuContent` добавлен destructive-state: для `vpn.isConnected` и `connectingInProgress` используется `.borderedProminent` + `.tint(.red)`, для «Подключить» остаётся `.bordered` без синего accent. |
+| TEST-3 | **ОБНОВЛЕНО** | Source-regression тест больше не запрещает `.borderedProminent` полностью, а проверяет отсутствие `.accentColor`, наличие красного destructive-стиля и сохранение текста IP/ping. |
+
+Проверки v1.56:
+
+| Проверка | Результат |
+|---|---|
+| `./tests/run-tests.sh` | OK |
+| Сборка и установка `./build-install.command` в `/Applications` | OK |
+| Версия repo/app и `/Applications` | OK: `CFBundleShortVersionString = 1.56` |
+| `codesign --verify --deep --strict` для repo/app и `/Applications` | OK |
+| root-helper probe через `sudo -n` | OK: `ROOT-HELPER-VERSION 1.51` |
+| Публикация GitHub release | OK: `v1.56` |
+
+---
+
 ## Итерация проверки и исправлений 18.07.2026 (v1.55)
 
 Методика: разбор пользовательского скриншота menu bar-панели от 18.07.2026, код-ревью `MenuContent`, source-regression тест для GUI-регрессии, сборка/установка в `/Applications`.

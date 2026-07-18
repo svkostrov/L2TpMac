@@ -21,10 +21,11 @@ fi
 
 /usr/bin/grep -Fq 'primaryActionTitle' L2TPOfficeApp/main.swift || fail "menu bar must use one contextual connection action"
 if /usr/bin/grep -Fq 'buttonStyle(.borderedProminent)' L2TPOfficeApp/main.swift; then
-  fail "menu bar Settings button must not use blue prominent style"
+  /usr/bin/grep -Fq 'primaryActionIsDestructive' L2TPOfficeApp/main.swift || fail "prominent style must be limited to destructive menu action"
 fi
-if /usr/bin/grep -Fq '.tint(primaryActionIsDestructive ? .red : .accentColor)' L2TPOfficeApp/main.swift; then
-  fail "menu bar action button must not use blue/red accent fill"
+/usr/bin/grep -Fq '.tint(.red)' L2TPOfficeApp/main.swift || fail "destructive disconnect action must stay red"
+if /usr/bin/grep -Fq '.accentColor' L2TPOfficeApp/main.swift; then
+  fail "menu action button must not use blue accent color"
 fi
 /usr/bin/grep -Fq 'Text("\(vpn.localIP) → \(vpn.remoteIP)")' L2TPOfficeApp/main.swift || fail "menu bar must show connected IPs"
 /usr/bin/grep -Fq 'Text(vpn.remotePingText)' L2TPOfficeApp/main.swift || fail "menu bar must show ping text, not only an icon"
