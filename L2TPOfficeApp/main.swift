@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.65"
+private let requiredRootHelperVersion = "1.66"
 
 // MARK: - GitHub updater
 
@@ -1159,7 +1159,7 @@ struct ContentView: View {
                     vpn.connect()
                 } label: {
                     Label("Подключить", systemImage: "lock.fill")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(connectDisabled ? Color.secondary : Color.green)
                         .frame(maxWidth: .infinity)
                 }
                 .controlSize(.large)
@@ -1316,7 +1316,7 @@ struct MenuContent: View {
                         } else {
                             Button(action: performPrimaryAction) {
                                 primaryActionLabel
-                                    .foregroundStyle(.green)
+                                    .foregroundStyle(primaryActionDisabled ? Color.secondary : Color.green)
                             }
                             .buttonStyle(.bordered)
                         }
