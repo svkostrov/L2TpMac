@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.60"
+private let requiredRootHelperVersion = "1.62"
 
 // MARK: - GitHub updater
 
@@ -250,6 +250,7 @@ final class VPNManager: ObservableObject {
     @Published var localIP = ""
     @Published var remoteIP = ""
     @Published var remotePingText = ""
+    @Published var uptimeText = ""
     @Published var statusText = "Отключено"
     @Published var lastError = ""
     @Published var logText = ""
@@ -303,6 +304,7 @@ final class VPNManager: ObservableObject {
     private var reconnectTimer: Timer?
     private var shouldMaintainConnection = false
     private var wasConnected = false
+    private var connectedSince: Date?
 
     init() {
         let d = UserDefaults.standard
@@ -429,8 +431,18 @@ final class VPNManager: ObservableObject {
                 self.localIP = ip
                 self.remoteIP = rip
                 let up = !ip.isEmpty
-                self.isConnected = up && oursAlive
+                let connected = up && oursAlive
+                if connected && !self.isConnected {
+                    self.connectedSince = Date()
+                } else if !connected {
+                    self.connectedSince = nil
+                    self.uptimeText = ""
+                }
+                self.isConnected = connected
                 self.foreignTunnel = up && !oursAlive
+                if self.isConnected {
+                    self.uptimeText = Self.formatUptime(since: self.connectedSince)
+                }
                 if self.reconnectEnabled, self.isConnected {
                     self.shouldMaintainConnection = true
                 }
@@ -546,6 +558,18 @@ final class VPNManager: ObservableObject {
             return String(format: "%.0f", number)
         }
         return value
+    }
+
+    private static func formatUptime(since start: Date?) -> String {
+        guard let start else { return "" }
+        let total = max(0, Int(Date().timeIntervalSince(start)))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let seconds = total % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
     }
 
     private static func currentSystemPathSignature() -> String {
@@ -982,8 +1006,15 @@ struct ContentView: View {
                     .frame(width: 14, height: 14)
                 Text(vpn.statusText).font(.title2.weight(.semibold))
                 if vpn.isConnected {
-                    Text("\(vpn.localIP) → \(vpn.remoteIP)")
-                        .font(.title3).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("\(vpn.localIP) → \(vpn.remoteIP)")
+                            .font(.title3)
+                        if !vpn.uptimeText.isEmpty {
+                            Label(vpn.uptimeText, systemImage: "clock")
+                                .font(.caption.monospacedDigit())
+                        }
+                    }
+                    .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {
@@ -1285,7 +1316,7 @@ struct MenuContent: View {
                 if vpn.isConnected {
                     HStack(spacing: 10) {
                         Text("\(vpn.localIP) → \(vpn.remoteIP)")
-                            .font(.caption.monospacedDigit())
+                            .font(.callout.weight(.medium).monospacedDigit())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.85)
@@ -1305,6 +1336,21 @@ struct MenuContent: View {
                             .padding(.horizontal, 7)
                             .background(.quaternary, in: Capsule())
                             .help("Ping до PPP-сервера \(vpn.remoteIP)")
+                        }
+                        if !vpn.uptimeText.isEmpty {
+                            HStack(spacing: 4) {
+                                Image(systemName: "clock")
+                                    .foregroundStyle(.secondary)
+                                Text(vpn.uptimeText)
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
+                            .font(.caption.weight(.medium))
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 7)
+                            .background(.quaternary, in: Capsule())
+                            .help("Время текущего подключения")
                         }
                     }
                     .padding(.leading, 21)
