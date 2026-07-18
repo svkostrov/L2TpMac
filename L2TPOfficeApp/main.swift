@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.66"
+private let requiredRootHelperVersion = "1.67"
 
 // MARK: - GitHub updater
 
@@ -1178,6 +1178,7 @@ struct ContentView: View {
                         connectingInProgress ? "Остановить подключение" : "Отключить",
                         systemImage: connectingInProgress ? "xmark.octagon.fill" : "lock.open"
                     )
+                    .foregroundStyle(stopButtonDisabled ? Color.secondary : Color.red)
                     .frame(maxWidth: .infinity)
                 }
                 .controlSize(.large)

@@ -24,6 +24,7 @@ fi
 
 /usr/bin/grep -Fq 'primaryActionTitle' L2TPOfficeApp/main.swift || fail "menu bar must use one contextual connection action"
 /usr/bin/grep -Fq '.tint(.red)' L2TPOfficeApp/main.swift || fail "destructive disconnect action must stay red"
+/usr/bin/grep -Fq '.foregroundStyle(stopButtonDisabled ? Color.secondary : Color.red)' L2TPOfficeApp/main.swift || fail "window destructive button text must use one red shade"
 /usr/bin/grep -Fq '.foregroundStyle(connectDisabled ? Color.secondary : Color.green)' L2TPOfficeApp/main.swift || fail "disabled window connect action must be visually dimmed"
 /usr/bin/grep -Fq '.foregroundStyle(primaryActionDisabled ? Color.secondary : Color.green)' L2TPOfficeApp/main.swift || fail "disabled menu connect action must be visually dimmed"
 if /usr/bin/grep -Fq '.tint(.green)' L2TPOfficeApp/main.swift; then
