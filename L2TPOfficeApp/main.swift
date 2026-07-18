@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.63"
+private let requiredRootHelperVersion = "1.64"
 
 // MARK: - GitHub updater
 
@@ -1161,6 +1161,8 @@ struct ContentView: View {
                     Label("Подключить", systemImage: "lock.fill").frame(maxWidth: .infinity)
                 }
                 .controlSize(.large)
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
                 .disabled(connectDisabled)
                 .opacity(connectDisabled ? 0.45 : 1.0)   // BR-08: явная индикация disabled
 
@@ -1314,7 +1316,8 @@ struct MenuContent: View {
                             Button(action: performPrimaryAction) {
                                 primaryActionLabel
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(.borderedProminent)
+                            .tint(.green)
                         }
                     }
                     .controlSize(.regular)

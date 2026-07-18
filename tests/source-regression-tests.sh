@@ -23,10 +23,8 @@ fi
 /usr/bin/grep -Fq 'CommandGroup(replacing: .newItem)' L2TPOfficeApp/main.swift || fail "New Window command must stay disabled"
 
 /usr/bin/grep -Fq 'primaryActionTitle' L2TPOfficeApp/main.swift || fail "menu bar must use one contextual connection action"
-if /usr/bin/grep -Fq 'buttonStyle(.borderedProminent)' L2TPOfficeApp/main.swift; then
-  /usr/bin/grep -Fq 'primaryActionIsDestructive' L2TPOfficeApp/main.swift || fail "prominent style must be limited to destructive menu action"
-fi
 /usr/bin/grep -Fq '.tint(.red)' L2TPOfficeApp/main.swift || fail "destructive disconnect action must stay red"
+/usr/bin/grep -Fq '.tint(.green)' L2TPOfficeApp/main.swift || fail "connect action must use green accent"
 if /usr/bin/grep -Fq '.accentColor' L2TPOfficeApp/main.swift; then
   fail "menu action button must not use blue accent color"
 fi
