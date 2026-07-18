@@ -1210,9 +1210,6 @@ struct MenuContent: View {
         if connectingInProgress { return "xmark.octagon.fill" }
         return vpn.isConnected ? "lock.open" : "lock.fill"
     }
-    private var primaryActionIsDestructive: Bool {
-        connectingInProgress || vpn.isConnected
-    }
 
     private func showMainWindow() {
         // BR-17: openWindow из MenuBarExtra не всегда открывает закрытое окно —
@@ -1233,19 +1230,11 @@ struct MenuContent: View {
                     Circle()
                         .fill(statusColor(vpn))
                         .frame(width: 11, height: 11)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(vpn.isConnected ? "Подключено" : vpn.statusText)
-                            .font(.headline)
-                            .lineLimit(1)
-                        if vpn.isConnected {
-                            Text("\(vpn.localIP) → \(vpn.remoteIP)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
+                    Text(vpn.isConnected ? "Подключено" : vpn.statusText)
+                        .font(.headline)
+                        .lineLimit(1)
                     .layoutPriority(1)
-                    Spacer()
+                    Spacer(minLength: 12)
                     Button {
                         if connectingInProgress {
                             vpn.emergencyStop()
@@ -1261,22 +1250,37 @@ struct MenuContent: View {
                             .frame(minWidth: 118)
                     }
                     .controlSize(.regular)
-                    .tint(primaryActionIsDestructive ? .red : .accentColor)
+                    .buttonStyle(.bordered)
                     .disabled(primaryActionDisabled)
                     .opacity(primaryActionDisabled ? 0.5 : 1.0)
-                    if vpn.isConnected, !vpn.remotePingText.isEmpty {
-                        HStack(spacing: 4) {
-                            Image(systemName: "waveform.path.ecg")
-                            Text(vpn.remotePingText)
-                        }
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(vpn.remotePingText == "—" ? .orange : .secondary)
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 7)
-                        .background(.quaternary, in: Capsule())
-                        .help("Ping до PPP-сервера \(vpn.remoteIP)")
-                    }
                     if vpn.busy { ProgressView().controlSize(.small) }
+                }
+
+                if vpn.isConnected {
+                    HStack(spacing: 10) {
+                        Text("\(vpn.localIP) → \(vpn.remoteIP)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                            .layoutPriority(1)
+                        Spacer(minLength: 8)
+                        if !vpn.remotePingText.isEmpty {
+                            HStack(spacing: 4) {
+                                Image(systemName: "waveform.path.ecg")
+                                Text(vpn.remotePingText)
+                                    .monospacedDigit()
+                            }
+                            .fixedSize(horizontal: true, vertical: false)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(vpn.remotePingText == "—" ? .orange : .secondary)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 7)
+                            .background(.quaternary, in: Capsule())
+                            .help("Ping до PPP-сервера \(vpn.remoteIP)")
+                        }
+                    }
+                    .padding(.leading, 21)
                 }
 
                 Button {
@@ -1343,7 +1347,7 @@ struct MenuContent: View {
             .font(.callout)
         }
         .padding(14)
-        .frame(width: 360)
+        .frame(width: 420)
     }
 }
 

@@ -23,5 +23,10 @@ fi
 if /usr/bin/grep -Fq 'buttonStyle(.borderedProminent)' L2TPOfficeApp/main.swift; then
   fail "menu bar Settings button must not use blue prominent style"
 fi
+if /usr/bin/grep -Fq '.tint(primaryActionIsDestructive ? .red : .accentColor)' L2TPOfficeApp/main.swift; then
+  fail "menu bar action button must not use blue/red accent fill"
+fi
+/usr/bin/grep -Fq 'Text("\(vpn.localIP) → \(vpn.remoteIP)")' L2TPOfficeApp/main.swift || fail "menu bar must show connected IPs"
+/usr/bin/grep -Fq 'Text(vpn.remotePingText)' L2TPOfficeApp/main.swift || fail "menu bar must show ping text, not only an icon"
 
 echo "source regression tests OK"

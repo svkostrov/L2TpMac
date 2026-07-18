@@ -7,6 +7,30 @@
 
 ---
 
+## Итерация проверки и исправлений 18.07.2026 (v1.55)
+
+Методика: разбор пользовательского скриншота menu bar-панели от 18.07.2026, код-ревью `MenuContent`, source-regression тест для GUI-регрессии, сборка/установка в `/Applications`.
+
+| ID | Статус | Что сделано / проверка |
+|----|--------|-------------------------|
+| BR-39 | **ИСПРАВЛЕН** | В подключенном состоянии menu bar-панель зажимала статус, IP, action-кнопку и ping в одну строку: remote IP обрезался, ping мог оставаться только иконкой, а action-кнопка получала синюю/красную акцентную заливку. Статус и action-кнопка оставлены в первой строке, IP и ping вынесены во вторую строку, ширина панели увеличена, action-кнопка переведена на обычный `.bordered` без `.tint(.accentColor)`. |
+| TEST-2 | **ДОБАВЛЕНО** | `tests/source-regression-tests.sh` теперь проверяет, что в menu bar есть текст IP, текст ping и нет старой `.tint(primaryActionIsDestructive ? .red : .accentColor)` для action-кнопки. |
+
+Проверки v1.55:
+
+| Проверка | Результат |
+|---|---|
+| `./tests/run-tests.sh` | OK |
+| Сборка и установка `./build-install.command` в `/Applications` | OK |
+| Версия repo/app и `/Applications` | OK: `CFBundleShortVersionString = 1.55` |
+| `codesign --verify --deep --strict` для repo/app и `/Applications` | OK |
+| root-helper probe через `sudo -n` | OK: `ROOT-HELPER-VERSION 1.51` |
+| Публикация GitHub release | OK: `v1.55` |
+
+Ограничение: визуальная GUI-проверка в Codex/macOS automation может оставаться ограниченной BR-38; текущая правка сделана по пользовательскому скриншоту и закреплена source-regression тестом.
+
+---
+
 ## Итерация проверки и исправлений 18.07.2026 (v1.54)
 
 Методика: повторное код-ревью `L2TPOfficeApp/main.swift`, `RootHelper/l2tp-office-root-helper.sh`, `L2TPOfficeHelper/main.go`, автотесты, сборка/установка в `/Applications`, проверка root-helper, живой сетевой connect/disconnect с текущими настройками, контроль default route и внешнего интернета.
