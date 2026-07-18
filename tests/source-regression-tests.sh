@@ -10,6 +10,9 @@ fail() {
 
 app_version=$(/usr/bin/plutil -extract CFBundleShortVersionString raw L2TPOfficeApp/Info.plist)
 /usr/bin/grep -Fq -- "- **$app_version**" README.md || fail "README history does not mention app version $app_version"
+/usr/bin/grep -Fq "requiredRootHelperVersion = \"$app_version\"" L2TPOfficeApp/main.swift || fail "app must require root-helper $app_version"
+/usr/bin/grep -Fq "ROOT_HELPER_VERSION=\"$app_version\"" RootHelper/l2tp-office-root-helper.sh || fail "root-helper version must match app version $app_version"
+/usr/bin/grep -Fq 'retrying once' RootHelper/l2tp-office-root-helper.sh || fail "root-helper must retry the early L2TP handshake close once"
 
 /usr/bin/grep -Fq 'Self.readLog(Self.logPath)' L2TPOfficeApp/main.swift || fail "GUI must read the full PPP/L2TP log"
 if /usr/bin/grep -Fq 'tail(Self.logPath' L2TPOfficeApp/main.swift; then

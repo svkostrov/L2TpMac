@@ -7,6 +7,29 @@
 
 ---
 
+## Итерация проверки и исправлений 18.07.2026 (v1.60)
+
+Методика: разбор живого `/tmp/l2tp-office-app.log`, воспроизведение connect/disconnect через установленный root-helper, код-ревью `RootHelper/l2tp-office-root-helper.sh`, локальные автотесты, сборка/установка в `/Applications`.
+
+| ID | Статус | Что сделано / проверка |
+|----|--------|-------------------------|
+| BR-45 | **ИСПРАВЛЕН** | Первый connect после запуска иногда не поднимался: сервер принимал `SCCRP`, затем закрывал control/session (`StopCCN`) до `ICRP/ICCN`, а `pppd` продолжал слать `LCP ConfReq` без ответа. Root-helper теперь распознаёт `l2tp handshake failed: peer closed control/session during handshake`, останавливает зависший `pppd`, ждёт короткую паузу и один раз повторяет подключение автоматически. |
+| TEST-6 | **ДОБАВЛЕНО** | Source-regression тест проверяет совпадение версии приложения и required/root-helper marker, а также наличие однократного retry раннего L2TP handshake close. |
+
+Проверки v1.60:
+
+| Проверка | Результат |
+|---|---|
+| `./tests/run-tests.sh` | OK |
+| Сборка и установка `./build-install.command` в `/Applications` | OK |
+| Версия repo/app и `/Applications` | OK: `CFBundleShortVersionString = 1.60` |
+| `codesign --verify --deep --strict` для `/Applications/L2TP Office.app` | OK |
+| root-helper probe через `sudo -n` | OK: `ROOT-HELPER-VERSION 1.60` |
+| Живой connect через установленный root-helper | OK: `CONNECTED 10.10.10.20`, CHAP/IPCP успешны |
+| Живой disconnect через установленный root-helper | OK: `DONE`, default route через `en0` / `192.168.1.1` |
+
+---
+
 ## Итерация проверки и исправлений 18.07.2026 (v1.59)
 
 Методика: разбор пользовательского скриншота menu bar update-блока, код-ревью `MenuContent`, чистка GitHub Releases, сжатие changelog в README до опорных релизов, source-regression тест, сборка/установка в `/Applications`.

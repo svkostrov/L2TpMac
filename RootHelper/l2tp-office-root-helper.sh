@@ -6,7 +6,7 @@ PIDF="/var/run/l2tp-office-app.pid"
 OPTS="/etc/ppp/l2tp-office-app.opts"
 APP_HELPER="/Applications/L2TP Office.app/Contents/MacOS/l2tp-office-helper"
 PPP_MTU="1200"
-ROOT_HELPER_VERSION="1.51"
+ROOT_HELPER_VERSION="1.60"
 
 die() {
   echo "$1"
@@ -171,6 +171,16 @@ stop_tunnel_processes() {
   rm -f "$OPTS"
 }
 
+stop_pid_bounded() {
+  local pid="$1" i
+  kill -TERM "$pid" 2>/dev/null || true
+  for i in 1 2 3 4 5; do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 1
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
 disconnect_tunnel() {
   local networks server log_message
   networks="$(decode_key NETWORKS)"
@@ -239,7 +249,7 @@ ensure_server_route() {
 }
 
 connect_tunnel() {
-  local server username password networks route_all user_esc pass_esc pid ip peer rterr start_line
+  local server username password networks route_all user_esc pass_esc pid ip peer rterr start_line attempt retry
   trap 'rm -f "$OPTS"' EXIT
   server="$(decode_key SERVER)"
   username="$(decode_key USERNAME)"
@@ -286,40 +296,58 @@ logfile $LOG
 PPPEOF
   touch "$LOG" 2>/dev/null || true
   chmod 644 "$LOG" 2>/dev/null || true
-  start_line=$(( $(/usr/bin/wc -l < "$LOG" 2>/dev/null || echo 0) + 1 ))
-  /usr/sbin/pppd file "$OPTS" >>"$LOG" 2>&1 &
-  pid=$!
-  echo "$pid" > "$PIDF"
-  rterr=
-  for i in $(seq 1 25); do
-    sleep 1
-    if ! kill -0 "$pid" 2>/dev/null; then
-      if /usr/bin/tail -n +"$start_line" "$LOG" 2>/dev/null | /usr/bin/grep -qi 'auth.*fail\|CHAP.*fail'; then echo "AUTHFAIL"; else echo "FAILED"; fi
-      exit 0
-    fi
-    ip=$(/sbin/ifconfig ppp0 2>/dev/null | /usr/bin/awk '/inet /{print $2; exit}')
-    if [ -n "$ip" ]; then
+  for attempt in 1 2; do
+    start_line=$(( $(/usr/bin/wc -l < "$LOG" 2>/dev/null || echo 0) + 1 ))
+    /usr/sbin/pppd file "$OPTS" >>"$LOG" 2>&1 &
+    pid=$!
+    echo "$pid" > "$PIDF"
+    rterr=
+    retry=
+    for i in $(seq 1 25); do
       sleep 1
-      peer=$(/sbin/ifconfig ppp0 2>/dev/null | /usr/bin/awk '/inet /{print $4; exit}')
-      for net in $networks; do
-        valid_cidr "$net" || { rterr=1; continue; }
-        if [ -n "$peer" ]; then
-          /sbin/route -n add -net "$net" "$peer" >/dev/null 2>&1 || /sbin/route -n change -net "$net" "$peer" >/dev/null 2>&1 || rterr=1
-        else
-          /sbin/route -n add -net "$net" -interface ppp0 >/dev/null 2>&1 || rterr=1
+      if /usr/bin/tail -n +"$start_line" "$LOG" 2>/dev/null | /usr/bin/grep -Fq 'l2tp handshake failed: peer closed control/session during handshake'; then
+        stop_pid_bounded "$pid"
+        if [ "$attempt" -eq 1 ]; then
+          append_log "L2TP Office: L2TP handshake was closed by peer on first attempt; retrying once."
+          cleanup_ppp_state
+          sleep 2
+          retry=1
+          break
         fi
-      done
-      if [ -n "$rterr" ]; then
-        append_log "L2TP Office: tunnel is up, but some routes were not installed. Local IP: $ip, PPP server: ${peer:-unknown}, VPN networks: ${networks:-none}."
-      else
-        append_log "L2TP Office: tunnel is up. Local IP: $ip, PPP server: ${peer:-unknown}, VPN networks: ${networks:-none}."
+        echo "FAILED"
+        exit 0
       fi
-      if [ -n "$rterr" ]; then echo "CONNECTED-ROUTEWARN $ip"; else echo "CONNECTED $ip"; fi
-      exit 0
-    fi
+      if ! kill -0 "$pid" 2>/dev/null; then
+        if /usr/bin/tail -n +"$start_line" "$LOG" 2>/dev/null | /usr/bin/grep -qi 'auth.*fail\|CHAP.*fail'; then echo "AUTHFAIL"; else echo "FAILED"; fi
+        exit 0
+      fi
+      ip=$(/sbin/ifconfig ppp0 2>/dev/null | /usr/bin/awk '/inet /{print $2; exit}')
+      if [ -n "$ip" ]; then
+        sleep 1
+        peer=$(/sbin/ifconfig ppp0 2>/dev/null | /usr/bin/awk '/inet /{print $4; exit}')
+        for net in $networks; do
+          valid_cidr "$net" || { rterr=1; continue; }
+          if [ -n "$peer" ]; then
+            /sbin/route -n add -net "$net" "$peer" >/dev/null 2>&1 || /sbin/route -n change -net "$net" "$peer" >/dev/null 2>&1 || rterr=1
+          else
+            /sbin/route -n add -net "$net" -interface ppp0 >/dev/null 2>&1 || rterr=1
+          fi
+        done
+        if [ -n "$rterr" ]; then
+          append_log "L2TP Office: tunnel is up, but some routes were not installed. Local IP: $ip, PPP server: ${peer:-unknown}, VPN networks: ${networks:-none}."
+        else
+          append_log "L2TP Office: tunnel is up. Local IP: $ip, PPP server: ${peer:-unknown}, VPN networks: ${networks:-none}."
+        fi
+        if [ -n "$rterr" ]; then echo "CONNECTED-ROUTEWARN $ip"; else echo "CONNECTED $ip"; fi
+        exit 0
+      fi
+    done
+    [ -n "$retry" ] && continue
+    kill "$pid" 2>/dev/null || true
+    echo "TIMEOUT"
+    exit 0
   done
-  kill "$pid" 2>/dev/null || true
-  echo "TIMEOUT"
+  echo "FAILED"
 }
 
 if [ "${L2TP_ROOT_HELPER_LIB_ONLY:-0}" = "1" ]; then
