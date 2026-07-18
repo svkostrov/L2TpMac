@@ -7,6 +7,30 @@
 
 ---
 
+## Итерация проверки и исправлений 18.07.2026 (v1.57)
+
+Методика: проверка состояния git-репозитория, обновление `.gitignore`, снятие build artifact с отслеживания без удаления локальной сборки.
+
+| ID | Статус | Что сделано / проверка |
+|----|--------|-------------------------|
+| BR-41 | **ИСПРАВЛЕН** | Папка проекта уже была git-репозиторием, но собранный `L2TP Office.app` отслеживался git-ом как бинарный build artifact. Добавлен расширенный `.gitignore` для macOS-мусора, архивов, `.app`, временных файлов, локальных env/log/probe-файлов, IDE-состояния и coverage/test-output. `L2TP Office.app` снят с отслеживания git без удаления с диска. |
+
+Проверки v1.57:
+
+| Проверка | Результат |
+|---|---|
+| `git rev-parse --is-inside-work-tree` | OK: `true` |
+| `.gitignore` покрывает build/release/local artifacts | OK |
+| `git check-ignore` для `.DS_Store`, `L2TP Office.app`, `L2TP-Office-1.57.zip`, `.env`, `.vscode/settings.json` | OK |
+| `./tests/run-tests.sh` | OK |
+| Сборка и установка `./build-install.command` в `/Applications` | OK |
+| Версия repo/app и `/Applications` | OK: `CFBundleShortVersionString = 1.57` |
+| `codesign --verify --deep --strict` для repo/app и `/Applications` | OK |
+| root-helper probe через `sudo -n` | OK: `ROOT-HELPER-VERSION 1.51` |
+| Публикация GitHub release | OK: `v1.57` |
+
+---
+
 ## Итерация проверки и исправлений 18.07.2026 (v1.56)
 
 Методика: уточнение UX-требования пользователя к menu bar action-кнопке, код-ревью `MenuContent`, source-regression тест, сборка/установка в `/Applications`.

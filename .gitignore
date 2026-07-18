@@ -1,2 +1,36 @@
+# macOS / Finder
 .DS_Store
+._*
+.AppleDouble
+.LSOverride
+Icon?
+
+# Build and release artifacts
+*.app/
 *.zip
+*.dmg
+*.pkg
+*.xcarchive/
+DerivedData/
+.build/
+build/
+dist/
+
+# Logs, temporary files and local probes
+*.log
+*.tmp
+*.temp
+tmp/
+*.env
+*.local
+
+# Editor and IDE local state
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test / coverage output
+coverage/
+*.prof
+*.test
