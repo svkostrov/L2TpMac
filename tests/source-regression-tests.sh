@@ -24,7 +24,10 @@ fi
 
 /usr/bin/grep -Fq 'primaryActionTitle' L2TPOfficeApp/main.swift || fail "menu bar must use one contextual connection action"
 /usr/bin/grep -Fq '.tint(.red)' L2TPOfficeApp/main.swift || fail "destructive disconnect action must stay red"
-/usr/bin/grep -Fq '.tint(.green)' L2TPOfficeApp/main.swift || fail "connect action must use green accent"
+/usr/bin/grep -Fq '.foregroundStyle(.green)' L2TPOfficeApp/main.swift || fail "connect action text must use green accent"
+if /usr/bin/grep -Fq '.tint(.green)' L2TPOfficeApp/main.swift; then
+  fail "connect action must not use green button fill"
+fi
 if /usr/bin/grep -Fq '.accentColor' L2TPOfficeApp/main.swift; then
   fail "menu action button must not use blue accent color"
 fi

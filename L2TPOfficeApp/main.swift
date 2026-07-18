@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.64"
+private let requiredRootHelperVersion = "1.65"
 
 // MARK: - GitHub updater
 
@@ -1158,11 +1158,12 @@ struct ContentView: View {
                 Button {
                     vpn.connect()
                 } label: {
-                    Label("Подключить", systemImage: "lock.fill").frame(maxWidth: .infinity)
+                    Label("Подключить", systemImage: "lock.fill")
+                        .foregroundStyle(.green)
+                        .frame(maxWidth: .infinity)
                 }
                 .controlSize(.large)
-                .buttonStyle(.borderedProminent)
-                .tint(.green)
+                .buttonStyle(.bordered)
                 .disabled(connectDisabled)
                 .opacity(connectDisabled ? 0.45 : 1.0)   // BR-08: явная индикация disabled
 
@@ -1315,9 +1316,9 @@ struct MenuContent: View {
                         } else {
                             Button(action: performPrimaryAction) {
                                 primaryActionLabel
+                                    .foregroundStyle(.green)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.green)
+                            .buttonStyle(.bordered)
                         }
                     }
                     .controlSize(.regular)
