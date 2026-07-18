@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.62"
+private let requiredRootHelperVersion = "1.63"
 
 // MARK: - GitHub updater
 
@@ -297,6 +297,7 @@ final class VPNManager: ObservableObject {
     private var loaded = false
     private var timer: Timer?
     private var pingTimer: Timer?
+    private var uptimeTimer: Timer?
     private var pingInProgress = false
     private var remotePingFailures = 0
     private var lastSystemPathSignature = ""
@@ -329,6 +330,9 @@ final class VPNManager: ObservableObject {
         pingTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.updateRemotePing()
             self?.rebuildTunnelAfterSystemPathChangeIfNeeded()
+        }
+        uptimeTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateUptimeText()
         }
         if autoConnect {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
@@ -440,9 +444,7 @@ final class VPNManager: ObservableObject {
                 }
                 self.isConnected = connected
                 self.foreignTunnel = up && !oursAlive
-                if self.isConnected {
-                    self.uptimeText = Self.formatUptime(since: self.connectedSince)
-                }
+                self.updateUptimeText()
                 if self.reconnectEnabled, self.isConnected {
                     self.shouldMaintainConnection = true
                 }
@@ -570,6 +572,14 @@ final class VPNManager: ObservableObject {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%d:%02d", minutes, seconds)
+    }
+
+    private func updateUptimeText() {
+        guard isConnected else {
+            uptimeText = ""
+            return
+        }
+        uptimeText = Self.formatUptime(since: connectedSince)
     }
 
     private static func currentSystemPathSignature() -> String {

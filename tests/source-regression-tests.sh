@@ -33,6 +33,7 @@ fi
 /usr/bin/grep -Fq 'Text("\(vpn.localIP) → \(vpn.remoteIP)")' L2TPOfficeApp/main.swift || fail "menu bar must show connected IPs"
 /usr/bin/grep -Fq 'Text(vpn.remotePingText)' L2TPOfficeApp/main.swift || fail "menu bar must show ping text, not only an icon"
 /usr/bin/grep -Fq '@Published var uptimeText' L2TPOfficeApp/main.swift || fail "VPN manager must expose connection uptime"
+/usr/bin/grep -Fq 'uptimeTimer = Timer.scheduledTimer(withTimeInterval: 1.0' L2TPOfficeApp/main.swift || fail "connection uptime must update every second"
 /usr/bin/grep -Fq 'Text(vpn.uptimeText)' L2TPOfficeApp/main.swift || fail "UI must show connection uptime"
 /usr/bin/grep -Fq 'formatUptime(since:' L2TPOfficeApp/main.swift || fail "VPN manager must format connection uptime"
 /usr/bin/grep -Fq 'return value <= 100 ? .green : .red' L2TPOfficeApp/main.swift || fail "menu bar ping text must be green up to 100 ms and red above 100 ms"
