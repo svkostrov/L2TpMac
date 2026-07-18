@@ -31,5 +31,8 @@ fi
 /usr/bin/grep -Fq 'Text(vpn.remotePingText)' L2TPOfficeApp/main.swift || fail "menu bar must show ping text, not only an icon"
 /usr/bin/grep -Fq 'return value <= 100 ? .green : .red' L2TPOfficeApp/main.swift || fail "menu bar ping text must be green up to 100 ms and red above 100 ms"
 /usr/bin/grep -Fq '.foregroundStyle(pingTextColor)' L2TPOfficeApp/main.swift || fail "menu bar ping text must use ping threshold color"
+if /usr/bin/awk '/updater.checkForUpdates\\(silent: false\\)/,/NSWorkspace.shared.open\\(repositoryURL\\)/ { print }' L2TPOfficeApp/main.swift | /usr/bin/grep -Fq 'VStack(alignment: .leading'; then
+  fail "menu bar update version and status must stay on one line"
+fi
 
 echo "source regression tests OK"

@@ -1330,14 +1330,13 @@ struct MenuContent: View {
                     HStack(spacing: 10) {
                         Image(systemName: updater.installing ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
                             .frame(width: 18)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(appVersion)
-                                .font(.callout.weight(.medium))
-                            Text(updater.statusText.isEmpty ? "Проверить обновления" : updater.statusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+                        Text(appVersion)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                        Text(updater.statusText.isEmpty ? "Проверить обновления" : updater.statusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
