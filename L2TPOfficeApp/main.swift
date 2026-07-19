@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.68"
+private let requiredRootHelperVersion = "1.69"
 
 // MARK: - GitHub updater
 
@@ -1299,7 +1299,7 @@ struct MenuContent: View {
         Label(primaryActionTitle, systemImage: primaryActionIcon)
             .font(.callout.weight(.semibold))
             .lineLimit(1)
-            .frame(minWidth: 118)
+            .frame(minWidth: 104)
     }
 
     private var pingTextColor: Color {
@@ -1398,15 +1398,15 @@ struct MenuContent: View {
 
             Divider()
 
-            HStack(spacing: 12) {
+            HStack(spacing: 8) {
                 Button {
                     updater.checkForUpdates(silent: false)
                 } label: {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         Image(systemName: updater.installing ? "arrow.down.circle.fill" : "arrow.triangle.2.circlepath")
-                            .frame(width: 18)
+                            .frame(width: 16)
                         Text(appVersion)
-                            .font(.callout.weight(.medium))
+                            .font(.caption.weight(.medium))
                             .lineLimit(1)
                         Text(updater.statusText.isEmpty ? "Проверить обновления" : updater.statusText)
                             .font(.caption)
@@ -1424,13 +1424,13 @@ struct MenuContent: View {
                     HStack(spacing: 6) {
                         Image(systemName: "chevron.left.forwardslash.chevron.right")
                         Text("GitHub")
-                            .font(.callout.weight(.medium))
+                            .font(.caption.weight(.medium))
                         Image(systemName: "arrow.up.right")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
-                    .padding(.vertical, 6)
-                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .padding(.horizontal, 7)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
             }
@@ -1447,8 +1447,8 @@ struct MenuContent: View {
             .foregroundStyle(.secondary)
             .font(.callout)
         }
-        .padding(14)
-        .frame(width: 420)
+        .padding(12)
+        .frame(width: 360)
     }
 }
 
