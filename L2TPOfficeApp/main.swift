@@ -13,7 +13,7 @@ private let appShortVersion: String = {
     Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
 }()
 
-private let requiredRootHelperVersion = "1.67"
+private let requiredRootHelperVersion = "1.68"
 
 // MARK: - GitHub updater
 
@@ -1006,6 +1006,12 @@ struct ContentView: View {
     private var stopButtonDisabled: Bool {
         connectingInProgress ? vpn.foreignTunnel : disconnectDisabled
     }
+    private var pingTextColor: Color {
+        guard vpn.remotePingText != "—" else { return .orange }
+        let value = vpn.remotePingText.split(separator: " ").first.flatMap { Int($0) }
+        guard let value else { return .secondary }
+        return value <= 100 ? .green : .red
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1020,8 +1026,16 @@ struct ContentView: View {
                         Text("\(vpn.localIP) → \(vpn.remoteIP)")
                             .font(.title3)
                         if !vpn.uptimeText.isEmpty {
-                            Label(vpn.uptimeText, systemImage: "clock")
-                                .font(.caption.monospacedDigit())
+                            HStack(spacing: 10) {
+                                Label(vpn.uptimeText, systemImage: "clock")
+                                    .font(.caption.monospacedDigit())
+                                if !vpn.remotePingText.isEmpty {
+                                    Label(vpn.remotePingText, systemImage: "waveform.path.ecg")
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(pingTextColor)
+                                        .help("Ping до PPP-сервера \(vpn.remoteIP)")
+                                }
+                            }
                         }
                     }
                     .foregroundStyle(.secondary)

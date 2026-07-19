@@ -35,6 +35,7 @@ if /usr/bin/grep -Fq '.accentColor' L2TPOfficeApp/main.swift; then
 fi
 /usr/bin/grep -Fq 'Text("\(vpn.localIP) → \(vpn.remoteIP)")' L2TPOfficeApp/main.swift || fail "menu bar must show connected IPs"
 /usr/bin/grep -Fq 'Text(vpn.remotePingText)' L2TPOfficeApp/main.swift || fail "menu bar must show ping text, not only an icon"
+/usr/bin/grep -Fq 'Label(vpn.remotePingText, systemImage: "waveform.path.ecg")' L2TPOfficeApp/main.swift || fail "main window must show ping text"
 /usr/bin/grep -Fq '@Published var uptimeText' L2TPOfficeApp/main.swift || fail "VPN manager must expose connection uptime"
 /usr/bin/grep -Fq 'uptimeTimer = Timer.scheduledTimer(withTimeInterval: 1.0' L2TPOfficeApp/main.swift || fail "connection uptime must update every second"
 /usr/bin/grep -Fq 'Text(vpn.uptimeText)' L2TPOfficeApp/main.swift || fail "UI must show connection uptime"
